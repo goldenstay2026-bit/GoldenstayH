@@ -3,7 +3,7 @@ dist
 dist-ssr
 *.log
 .env
-data/
+/data/
 *-firebase-adminsdk-*.json
 service-account*.json
 .firebase/
