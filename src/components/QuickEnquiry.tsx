@@ -27,14 +27,16 @@ export function QuickEnquiry() {
     if (checkIn && checkIn < todayISO()) return setError('Check-in can’t be in the past.');
     if (checkIn && checkOut && checkOut <= checkIn) return setError('Check-out must be after check-in.');
     setError('');
-    prefill({ checkIn, checkOut, guests });
+    // Book Now → online booking with the chosen dates and guests.
+    window.location.href = bookHref;
   };
+  const bookHref = `/book/?${new URLSearchParams({ ...(checkIn && { in: checkIn }), ...(checkOut && { out: checkOut }), guests }).toString()}`;
 
   return (
     <form
       onSubmit={onSubmit}
       noValidate
-      aria-label="Quick availability enquiry"
+      aria-label="Book your stay"
       className="flex flex-col justify-center rounded-[22px] bg-card px-4 py-3.5 lg:px-[18px]"
     >
       <DateRangeField
@@ -96,17 +98,14 @@ export function QuickEnquiry() {
         </p>
       )}
 
-      <button type="submit" className="btn btn-outline mt-2.5 h-11 w-full text-[13.5px]">
-        Enquire Availability
+      <button type="submit" className="btn btn-dark mt-2.5 h-11 w-full text-[13.5px]">
+        Book Now
       </button>
       <p className="mt-2 text-center text-[11px] text-muted">
-        Availability is confirmed by the owner on WhatsApp ·{' '}
-        <a
-          href={`/book/?${new URLSearchParams({ ...(checkIn && { in: checkIn }), ...(checkOut && { out: checkOut }), guests }).toString()}`}
-          className="link-underline font-semibold text-ink"
-        >
-          or book online
-        </a>
+        Prefer to ask first?{' '}
+        <button type="button" onClick={() => prefill({ checkIn, checkOut, guests })} className="link-underline font-semibold text-ink">
+          Enquire on WhatsApp
+        </button>
       </p>
     </form>
   );

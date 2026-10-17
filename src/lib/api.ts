@@ -34,9 +34,17 @@ export async function api<T>(path: string, { method = 'GET', body, token, idToke
     if ((e as Error).name === 'AbortError') throw e;
     throw new ApiError(0, { error: 'Can’t reach Golden Stay right now. Check your connection and try again.', code: 'NETWORK' });
   }
+  const isJson = (res.headers.get('content-type') ?? '').includes('application/json');
   const json = (await res.json().catch(() => ({}))) as unknown;
   // Cancelled while the body was downloading: don't hand back an empty object as data.
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  // No JSON at all = the booking server isn't there (e.g. a static-only host): say so plainly.
+  if (!isJson) {
+    throw new ApiError(res.status || 503, {
+      error: 'Online booking isn’t available right now. Please enquire on WhatsApp or call +91 91010 87949.',
+      code: 'API_UNAVAILABLE',
+    });
+  }
   if (!res.ok) throw new ApiError(res.status, json as Partial<ApiErrorBody>);
   return json as T;
 }
