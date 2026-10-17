@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /booking/
+Disallow: /account/
+Disallow: /confirm/

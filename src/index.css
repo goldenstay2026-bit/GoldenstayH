@@ -1,0 +1,411 @@
+/* Fonts — self-hosted via @fontsource. Plus Jakarta Sans is the variable
+   build (one file covers 400–700). Its latin-ext subset carries the ₹
+   (U+20B9) glyph and is fetched via unicode-range when a price is shown. */
+@import '@fontsource-variable/plus-jakarta-sans/wght.css';
+@import '@fontsource/instrument-serif/latin-400-italic.css';
+
+@import 'tailwindcss';
+
+/* Wordmark: declared by hand so it can use font-display: block — the Gothic
+   wordmark should never flash in a fallback face. */
+@font-face {
+  font-family: 'UnifrakturCook';
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src:
+    url('../node_modules/@fontsource/unifrakturcook/files/unifrakturcook-latin-700-normal.woff2') format('woff2'),
+    url('../node_modules/@fontsource/unifrakturcook/files/unifrakturcook-latin-700-normal.woff') format('woff');
+}
+
+@theme {
+  --color-taupe: #706356;
+  --color-cream: #f5f2ef;
+  --color-beige: #e5ded5;
+  --color-ink: #171717;
+  /* Spec muted is #77716C; darkened a touch so small text meets WCAG AA (4.5:1) on card/cream surfaces */
+  --color-muted: #6e6863;
+  --color-card: #f2f0ed;
+  --color-hairline: #e2ddd7;
+  --color-field: #dcd6cf;
+
+  --font-sans: 'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-serif: 'Instrument Serif', Georgia, serif;
+  --font-gothic: 'UnifrakturCook', 'Old English Text MT', serif;
+
+  /* Breakpoints: ≤640 mobile · 641–1100 tablet · >1100 desktop */
+  --breakpoint-*: initial;
+  --breakpoint-md: 641px;
+  --breakpoint-lg: 1101px;
+
+  --radius-hero: 22px;
+  --radius-img: 16px;
+  --radius-field: 12px;
+  --radius-about: 28px;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    /* Sticky header incl. the tab strip below 1101px */
+    scroll-padding-top: 132px;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    html {
+      scroll-behavior: smooth;
+    }
+  }
+  @media (min-width: 1101px) {
+    html {
+      scroll-padding-top: 100px;
+    }
+  }
+  body {
+    background: #ffffff;
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: clip;
+  }
+  img {
+    max-width: 100%;
+  }
+  /* <picture> wrappers shouldn't affect layout — the <img> sizes itself */
+  picture {
+    display: contents;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-ink);
+    outline-offset: 3px;
+  }
+  .on-dark :focus-visible,
+  .on-dark:focus-visible {
+    outline-color: #ffffff;
+  }
+  /* Native date inputs: keep the picker icon subtle */
+  input[type='date']::-webkit-calendar-picker-indicator {
+    opacity: 0.55;
+    cursor: pointer;
+  }
+  input[type='date'] {
+    min-width: 0;
+  }
+}
+
+@layer components {
+  .container-x {
+    width: 100%;
+    max-width: 1440px;
+    margin-inline: auto;
+    padding-inline: 16px;
+  }
+  @media (min-width: 641px) {
+    .container-x {
+      padding-inline: 32px;
+    }
+  }
+  @media (min-width: 1101px) {
+    .container-x {
+      padding-inline: 64px;
+    }
+  }
+
+  .section {
+    margin-top: 64px;
+  }
+  @media (min-width: 641px) {
+    .section {
+      margin-top: 96px;
+    }
+  }
+
+  /* Headings: Plus Jakarta Sans 500, −3.5% tracking */
+  .heading {
+    font-weight: 500;
+    letter-spacing: -0.035em;
+  }
+  .h2 {
+    font-size: 38px;
+    line-height: 1.05;
+  }
+  @media (min-width: 641px) {
+    .h2 {
+      font-size: 44px;
+    }
+  }
+  @media (min-width: 1101px) {
+    .h2 {
+      font-size: 50px;
+    }
+  }
+  /* One accent word per heading in Instrument Serif Italic, ~1.06× */
+  .accent {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 1.06em;
+    letter-spacing: -0.01em;
+    line-height: 0.9;
+  }
+
+  .wordmark {
+    font-family: var(--font-gothic);
+    font-weight: 700;
+    letter-spacing: 0;
+    line-height: 1;
+  }
+
+  .field {
+    width: 100%;
+    height: 46px;
+    border: 1px solid var(--color-field);
+    border-radius: var(--radius-field);
+    background: #ffffff;
+    padding: 0 14px;
+    font-size: 16px;
+    color: var(--color-ink);
+    transition: border-color 0.15s;
+  }
+  @media (min-width: 641px) {
+    .field {
+      font-size: 14px;
+    }
+  }
+  .field::placeholder {
+    color: #a39d97;
+  }
+  .field:hover {
+    border-color: #c9c2ba;
+  }
+  .field:focus-visible {
+    outline: 2px solid var(--color-ink);
+    outline-offset: 0;
+    border-color: var(--color-ink);
+  }
+  .field[aria-invalid='true'] {
+    border-color: #b42318;
+  }
+  select.field {
+    appearance: none;
+    padding-right: 38px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23171717' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' viewBox='0 0 24 24'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+    text-overflow: ellipsis;
+  }
+
+  .select-bare {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' fill='none' stroke='%23171717' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' viewBox='0 0 24 24'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right center;
+    background-size: 14px;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 999px;
+    font-weight: 500;
+    white-space: nowrap;
+    transition:
+      background-color 0.18s,
+      color 0.18s,
+      border-color 0.18s,
+      transform 0.18s;
+  }
+  .btn-dark {
+    background: var(--color-ink);
+    color: #ffffff;
+  }
+  .btn-dark:hover {
+    background: #333130;
+  }
+  .btn-outline {
+    border: 1px solid var(--color-ink);
+    color: var(--color-ink);
+    background: transparent;
+  }
+  .btn-outline:hover {
+    background: var(--color-ink);
+    color: #ffffff;
+  }
+
+  .pill-outline {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--color-hairline);
+    border-radius: 999px;
+    background: #ffffff;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.94);
+    color: var(--color-ink);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 6px 10px;
+  }
+
+  .link-underline {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1px;
+  }
+  .link-underline:hover {
+    text-decoration-thickness: 2px;
+  }
+
+  /* Circle "open" affordance on image tiles */
+  .tile-arrow {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.85);
+    color: #ffffff;
+    transition:
+      background-color 0.2s,
+      color 0.2s;
+  }
+  .group:hover .tile-arrow {
+    background: #ffffff;
+    color: var(--color-ink);
+  }
+
+  .zoom-img {
+    transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  .group:hover .zoom-img {
+    transform: scale(1.035);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .group:hover .zoom-img {
+    transform: none;
+  }
+}
+
+/* ---------- Tabs ---------- */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.tab-panel:not([hidden]) {
+  animation: tab-fade 180ms ease-out;
+}
+@keyframes tab-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* The first section of a tab sits closer to the tab bar than between-section spacing. */
+.tab-panel > .section:first-child {
+  margin-top: 28px;
+}
+@media (min-width: 641px) {
+  .tab-panel > .section:first-child {
+    margin-top: 44px;
+  }
+}
+
+/* ---------- Print (policy pages) ---------- */
+@media print {
+  header,
+  footer,
+  .no-print,
+  [aria-label='Quick actions'] {
+    display: none !important;
+  }
+  body {
+    background: #fff;
+  }
+  .policy-page > div {
+    background: #fff !important;
+    padding: 0 !important;
+  }
+}
+
+/* Headings receive focus programmatically when a tab opens (for screen readers);
+   they aren't interactive, so no focus ring. Links, buttons and tabs keep theirs. */
+h1[tabindex='-1']:focus,
+h2[tabindex='-1']:focus {
+  outline: none;
+}
+
+/* ---------- Date-range calendar (react-day-picker) ---------- */
+/* .rdp-root declares the library defaults, so the overrides go on it too. */
+.gs-rdp,
+.gs-rdp .rdp-root {
+  --gs-day: min(44px, calc((100vw - 44px) / 7));
+  --rdp-accent-color: var(--color-ink);
+  --rdp-accent-background-color: var(--color-beige);
+  --rdp-day-width: var(--gs-day);
+  --rdp-day-height: var(--gs-day);
+  --rdp-day_button-width: calc(var(--gs-day) - 2px);
+  --rdp-day_button-height: calc(var(--gs-day) - 2px);
+  --rdp-day_button-border-radius: 10px;
+  --rdp-selected-border: 2px solid var(--color-ink);
+  --rdp-range_middle-background-color: var(--color-beige);
+  --rdp-range_start-date-background-color: var(--color-ink);
+  --rdp-range_end-date-background-color: var(--color-ink);
+  --rdp-today-color: var(--color-ink);
+  --rdp-disabled-opacity: 0.35;
+  --rdp-months-gap: 1.5rem;
+  --rdp-nav_button-width: 2.75rem;
+  --rdp-nav_button-height: 2.75rem;
+  font-size: 14.5px;
+}
+.gs-rdp .rdp-today:not(.rdp-outside) .rdp-day_button {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+/* Booked nights: grey and struck through (still clickable as a check-out day when allowed). */
+.gs-rdp .gs-booked:not(.rdp-range_end) .rdp-day_button,
+.gs-legend-booked {
+  background: var(--color-card);
+  color: #8f8882;
+  text-decoration: line-through;
+}
+.gs-rdp .gs-booked.rdp-disabled {
+  opacity: 1;
+}
+.gs-legend-booked,
+.gs-legend-free {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.gs-legend-free {
+  border: 1px solid var(--color-hairline);
+  color: var(--color-ink);
+}

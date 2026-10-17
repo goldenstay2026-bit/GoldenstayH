@@ -1,0 +1,46 @@
+rules_version = '2';
+
+// Golden Stay — Firestore security rules.
+//
+//   users/{uid}                  guest profile: the guest can read and write their own (validated)
+//   users/{uid}/bookings/{ref}   copy of the guest's bookings: read-only for the guest,
+//                                written only by the server (Admin SDK bypasses these rules)
+//
+// Bookings and payments live on the server (SQLite) — this is user data only.
+// Deploy with:  npx firebase deploy --only firestore:rules
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function validProfile() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['name', 'phone', 'email', 'createdAt', 'updatedAt'])
+        && d.name is string && d.name.size() >= 2 && d.name.size() <= 80
+        && d.phone is string && d.phone.matches('^[6-9][0-9]{9}$')
+        && (!('email' in d) || d.email == request.auth.token.email)
+        && d.updatedAt == request.time;
+    }
+
+    match /users/{uid} {
+      allow get: if isOwner(uid);
+      allow list: if false;
+      allow create: if isOwner(uid) && validProfile() && request.resource.data.createdAt == request.time;
+      allow update: if isOwner(uid) && validProfile() && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false;
+
+      match /bookings/{ref} {
+        allow get, list: if isOwner(uid);
+        allow write: if false;
+      }
+    }
+
+    // Everything else is closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
