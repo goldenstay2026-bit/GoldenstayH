@@ -93,8 +93,8 @@ describe('availability and double-booking protection', () => {
     );
     const statuses = results.map((r) => r.status).sort();
     assert.deepEqual(statuses, [201, 409, 409, 409, 409, 409, 409, 409]);
-    const n = h.ctx.db.prepare(`SELECT COUNT(*) AS n FROM booking_nights WHERE unit = 'nonac' AND night = '2027-03-06'`).get() as { n: number };
-    assert.equal(n.n, 1);
+    const held = await h.night('nonac', '2027-03-06');
+    assert.ok(held, 'exactly one booking holds the night (one document per room-night)');
   });
 
   test('an unpaid hold expires and frees the room', async () => {

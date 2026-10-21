@@ -48,48 +48,41 @@ export function AdminProvider({ me, getToken, onAuthLost, signOut, children }: {
     [getToken],
   );
 
-  // Live updates: Server-Sent Events read with fetch (EventSource can't send the token).
+  // Live refresh: check the server's change stamps every few seconds (two tiny reads) and
+  // refetch what changed. Paused while the tab is hidden, to save database reads.
   useEffect(() => {
+    let last: { bookings: string; requests: string } | null = null;
+    let timer: number | undefined;
     let stopped = false;
-    let ctrl: AbortController | null = null;
-    let retry: number | undefined;
-    const connect = async () => {
-      ctrl = new AbortController();
-      try {
-        const token = await getToken();
-        const res = await fetch('/api/admin/events', { headers: token ? { Authorization: `Bearer ${token}` } : {}, credentials: 'same-origin', signal: ctrl.signal });
-        if (!res.ok || !res.body) throw new Error(`events ${res.status}`);
-        setLive(true);
-        // Something may have changed while we were disconnected.
-        setVersion((v) => ({ bookings: v.bookings + 1, requests: v.requests + 1 }));
-        const reader = res.body.getReader();
-        const dec = new TextDecoder();
-        let buf = '';
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-          let i;
-          while ((i = buf.indexOf('\n\n')) >= 0) {
-            const chunk = buf.slice(0, i);
-            buf = buf.slice(i + 2);
-            const data = /^data: (.*)$/m.exec(chunk)?.[1];
-            if (!data) continue;
-            const topic = (JSON.parse(data) as { topic: 'bookings' | 'requests' }).topic;
-            setVersion((v) => ({ ...v, [topic]: v[topic] + 1 }));
+    const check = async () => {
+      if (stopped) return;
+      if (document.visibilityState === 'visible') {
+        try {
+          const token = await getToken();
+          const now = await api<{ bookings: string; requests: string }>('/admin/changes', { idToken: token });
+          setLive(true);
+          if (last && (now.bookings !== last.bookings || now.requests !== last.requests)) {
+            setVersion((v) => ({ bookings: v.bookings + (now.bookings !== last!.bookings ? 1 : 0), requests: v.requests + (now.requests !== last!.requests ? 1 : 0) }));
           }
+          last = now;
+        } catch {
+          setLive(false);
         }
-      } catch {
-        /* reconnect below */
       }
-      setLive(false);
-      if (!stopped) retry = window.setTimeout(connect, 5000);
+      timer = window.setTimeout(check, 10_000);
     };
-    void connect();
+    // Coming back to the tab: check straight away.
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      window.clearTimeout(timer);
+      void check();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    void check();
     return () => {
       stopped = true;
-      ctrl?.abort();
-      window.clearTimeout(retry);
+      window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [getToken]);
 

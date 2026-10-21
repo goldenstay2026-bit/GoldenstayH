@@ -7,7 +7,7 @@ Guests **sign in with email and password to book online**. Firebase handles the 
 | **Authentication** | Guest accounts (email + password, password-reset emails) |
 | **Firestore** | `users/{uid}`: the guest's name and phone (pre-fills their next booking)<br>`users/{uid}/bookings/{ref}`: a read-only copy of each of their bookings and its status |
 
-Bookings, payments and the admin stay on the Golden Stay server (SQLite), so double-booking protection and QR verification work exactly as before.
+Bookings, payments, requests and the admin data are also stored in this Firestore database (collections such as `bookings`, `booking_nights`, `payments`), written only by the server with its service-account key; the security rules keep every browser out of them.
 
 Your project **goldenstay-b847e** is already connected: its web config is in `.env`. Do these one-time steps in the [Firebase console](https://console.firebase.google.com/project/goldenstay-b847e).
 
@@ -43,20 +43,17 @@ npx firebase login
 npm run firebase:deploy-rules
 ```
 
-## 5. Let the server write booking copies to Firestore (recommended)
+## 5. Give the server its key to Firestore (required)
 
-Sign-in checks work with just the project ID. To also copy bookings into each guest's Firestore account:
+Firestore is the booking system's database, so the server needs a service-account key.
 
 1. **Project settings (⚙) → Service accounts → Generate new private key → Generate key**. A `.json` file downloads.
-2. **This file is a password for your whole project.** Keep it on the server only, never in the website, git or email. Store it outside the project folder if you can, e.g. `/etc/goldenstay/firebase-service-account.json`.
-3. In the server's `.env`:
-   ```
-   FIREBASE_PROJECT_ID=goldenstay-b847e
-   FIREBASE_SERVICE_ACCOUNT_FILE=/etc/goldenstay/firebase-service-account.json
-   ```
-4. Restart the server. It logs `Guest sign-in (Firebase): ON (goldenstay-b847e)`.
+2. **This file is a password for your whole project.** Never put it in the website, git or email.
+3. **On Vercel:** open the file, copy all of it, and paste it as the value of `FIREBASE_SERVICE_ACCOUNT` (Project → Settings → Environment Variables). Mark it *Sensitive*.
+   **On your own server:** store the file outside the project folder and set `FIREBASE_SERVICE_ACCOUNT_FILE=/etc/goldenstay/firebase-service-account.json`.
+4. Also set `FIREBASE_PROJECT_ID=goldenstay-b847e`, then redeploy / restart.
 
-Without the file, the server logs that booking copies are off. Guests can still sign in, book, and see their bookings on **My account** (that page reads from the server).
+For local development leave both empty: `npm run dev` starts the Firestore emulator instead, so your real bookings are never touched.
 
 ## 6. Recommended hardening
 
@@ -71,7 +68,8 @@ Without the file, the server logs that booking copies are off. Guests can still 
 | --- | --- | --- |
 | `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID`, `VITE_FIREBASE_APP_ID` | Build time (baked into the website) | **No.** Public by design; already set in `.env`. Rebuild (`npm run build`) after changing them. |
 | `FIREBASE_PROJECT_ID` | Server | No |
-| `FIREBASE_SERVICE_ACCOUNT_FILE` | Server | **Yes** (path to the private key file) |
+| `FIREBASE_SERVICE_ACCOUNT` | Server (Vercel) | **Yes** (the key JSON itself) |
+| `FIREBASE_SERVICE_ACCOUNT_FILE` | Server (self-hosted) | **Yes** (path to the key file) |
 
 Analytics (`measurementId`) is deliberately **not** enabled: it loads Google's tracking script and sets cookies. Ask if you want it.
 

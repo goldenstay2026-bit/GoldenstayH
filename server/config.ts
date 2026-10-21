@@ -10,7 +10,6 @@ export type Config = {
   port: number;
   /** Public origin of the site, e.g. https://goldenstay.in — used for PhonePe redirect URLs. */
   siteUrl: string;
-  dbPath: string;
   trustProxy: boolean;
   holdMinutes: number;
   /** emails: Firebase accounts allowed into /admin (verified email required). */
@@ -31,8 +30,12 @@ export type Config = {
   };
   /** Signs the owner's "Review & confirm booking" email links (SECRET). */
   ownerLinkSecret: string;
-  /** Firebase project used for guest sign-in (Auth) and user data (Firestore). */
-  firebase: { projectId: string; serviceAccountFile: string };
+  /**
+   * Firebase project: guest + owner sign-in (Auth) and the database (Firestore).
+   * serviceAccount = the service-account key JSON (or base64 of it) — SECRET;
+   * serviceAccountFile = a path to that JSON file (alternative to serviceAccount).
+   */
+  firebase: { projectId: string; serviceAccount: string; serviceAccountFile: string };
   /** Owner notifications for website enquiries (and QR payment alerts). */
   notify: {
     telegramBotToken: string;
@@ -73,21 +76,20 @@ export function loadConfig(): Config {
     console.warn('[config] PHONEPE_ENABLED=true but credentials are incomplete — gateway stays OFF.');
   }
 
-  const siteUrl = env('SITE_URL', `http://localhost:${env('PORT', '8787')}`).replace(/\/$/, '');
+  // On Vercel, fall back to the project's production domain when SITE_URL isn't set.
+  const vercelUrl = env('VERCEL_PROJECT_PRODUCTION_URL') ? `https://${env('VERCEL_PROJECT_PRODUCTION_URL')}` : '';
+  const siteUrl = env('SITE_URL', vercelUrl || `http://localhost:${env('PORT', '8787')}`).replace(/\/$/, '');
   if (nodeEnv === 'production' && !siteUrl.startsWith('https://')) {
     throw new Error('SITE_URL must be an https:// URL in production.');
   }
+  // Optional: the owner normally signs in with Firebase (ADMIN_EMAILS); this is the backup password.
   const passwordHash = env('ADMIN_PASSWORD_HASH');
-  if (nodeEnv === 'production' && !passwordHash) {
-    throw new Error('ADMIN_PASSWORD_HASH is required in production (run: npm run admin:hash).');
-  }
 
   return {
     nodeEnv,
     port: Number(env('PORT', '8787')),
     siteUrl,
-    dbPath: env('DATABASE_PATH', 'data/golden-stay.db'),
-    trustProxy: env('TRUST_PROXY', 'false') === 'true',
+    trustProxy: env('TRUST_PROXY', process.env.VERCEL ? 'true' : 'false') === 'true',
     holdMinutes: Math.max(10, Number(env('BOOKING_HOLD_MINUTES', '30'))),
     admin: {
       passwordHash,
@@ -112,6 +114,7 @@ export function loadConfig(): Config {
     ownerLinkSecret: ownerLinkSecret(nodeEnv),
     firebase: {
       projectId: env('FIREBASE_PROJECT_ID'),
+      serviceAccount: env('FIREBASE_SERVICE_ACCOUNT'),
       serviceAccountFile: env('FIREBASE_SERVICE_ACCOUNT_FILE'),
     },
     notify: {

@@ -22,7 +22,7 @@ describe('guest sign-in (Firebase Auth) is required to book', () => {
   test('email comes from the verified account, not the form', async () => {
     const r = await h.book({ checkIn: '2026-11-01', checkOut: '2026-11-02', email: 'someone-else@example.com' }, authAs('u-amit', 'Amit@Example.com'));
     assert.equal(r.status, 201);
-    const row = h.ctx.db.prepare('SELECT guest_email, user_uid FROM bookings WHERE ref = ?').get(r.json.booking.ref) as Record<string, string>;
+    const row = await h.byRef(r.json.booking.ref);
     assert.equal(row.guest_email, 'amit@example.com');
     assert.equal(row.user_uid, 'u-amit');
   });

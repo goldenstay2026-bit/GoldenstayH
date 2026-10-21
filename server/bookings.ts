@@ -13,17 +13,18 @@ import {
   stayNights,
   todayInIndia,
 } from '../shared/validate.ts';
+import { inBackground } from './background.ts';
+import { markChanged } from './changes.ts';
 import type { Config } from './config.ts';
-import { onCommit, tx, type DB } from './db.ts';
+import { ConflictError, type Store } from './db.ts';
 import type { FirebaseServices } from './firebase.ts';
 import { bookingSheetRow, syncBookingToSheet } from './notify/bookingSheet.ts';
 import { sheetsConfigured } from './notify/sheets.ts';
-import { emitChange } from './events.ts';
 import { HttpError } from './http.ts';
 import type { PhonePeClient } from './phonepe.ts';
 
 export type Ctx = {
-  db: DB;
+  db: Store;
   config: Config;
   phonepe: PhonePeClient | null;
   now: () => Date;
@@ -59,7 +60,7 @@ export type BookingRow = {
   created_at: string;
   updated_at: string;
   confirmed_at: string | null;
-  /** Firebase Auth uid of the guest who booked (null for bookings made before sign-in existed). */
+  /** Firebase Auth uid of the guest who booked (null for owner-entered bookings). */
   user_uid: string | null;
   /** booking | block (owner-blocked dates) */
   kind: 'booking' | 'block';
@@ -89,25 +90,39 @@ export type PaymentRow = {
   updated_at: string;
 };
 
+export type RefundRow = {
+  id: number;
+  payment_id: number;
+  booking_id: number;
+  method: 'gateway' | 'manual';
+  merchant_refund_id: string;
+  gateway_refund_id: string | null;
+  amount_paise: number;
+  state: 'pending' | 'completed' | 'failed';
+  note: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export const iso = (ctx: Ctx) => ctx.now().toISOString();
 export const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
 
 // ---------- audit ----------
 
-export function audit(ctx: Ctx, actor: string, action: string, bookingId: number | null, details: Record<string, unknown> = {}) {
-  ctx.db
-    .prepare('INSERT INTO audit_log (at, actor, action, booking_id, details) VALUES (?, ?, ?, ?, ?)')
-    .run(iso(ctx), actor, action, bookingId, JSON.stringify(details));
+export async function audit(ctx: Ctx, actor: string, action: string, bookingId: number | null, details: Record<string, unknown> = {}) {
+  // The booking's public ID is stored too, so the audit list needs no extra lookups.
+  const ref = bookingId ? ((await getBookingById(ctx, bookingId))?.ref ?? null) : null;
+  await ctx.db.insert('audit_log', { at: iso(ctx), actor, action, booking_id: bookingId, booking_ref: ref, details: JSON.stringify(details) });
 }
 
 // ---------- rooms & pricing ----------
 
-export function getRoom(ctx: Ctx, id: string): RoomRow | undefined {
-  return ctx.db.prepare('SELECT * FROM rooms WHERE id = ?').get(id) as RoomRow | undefined;
+export function getRoom(ctx: Ctx, id: string): Promise<RoomRow | undefined> {
+  return ctx.db.get<RoomRow>('rooms', id);
 }
 
-export function listRooms(ctx: Ctx): PublicRoom[] {
-  const rows = (ctx.db.prepare('SELECT * FROM rooms ORDER BY price_paise').all() as RoomRow[]).filter((r) => isRoomId(r.id));
+export async function listRooms(ctx: Ctx): Promise<PublicRoom[]> {
+  const rows = (await ctx.db.query<RoomRow>('rooms', { orderBy: [['price_paise']] })).filter((r) => isRoomId(r.id));
   return rows.map((r) => ({ id: r.id as RoomId, name: r.name, pricePaise: r.price_paise, bookable: r.bookable === 1 }));
 }
 
@@ -128,21 +143,27 @@ function priceLines(room: RoomRow, nights: number): { lines: PriceLine[]; total:
   return { lines, total, payNow: total };
 }
 
-/** Which units are already held on any of the given nights. */
-function unitsTaken(ctx: Ctx, units: Unit[], nights: string[]): boolean {
+// ---------- room-nights ----------
+
+/**
+ * One document per physical unit per night held: booking_nights/{unit}_{night}.
+ * Creating it fails if it already exists — that is what makes double booking
+ * impossible, even when two guests press Book at the same moment.
+ */
+export const nightId = (unit: Unit, night: string) => `${unit}_${night}`;
+
+/** Is any of these units already held on any of these nights? */
+async function unitsTaken(ctx: Ctx, units: Unit[], nights: string[]): Promise<boolean> {
   if (nights.length === 0) return false;
-  const q = ctx.db.prepare(
-    `SELECT 1 FROM booking_nights WHERE unit IN (${units.map(() => '?').join(',')})
-     AND night IN (${nights.map(() => '?').join(',')}) LIMIT 1`,
-  );
-  return q.get(...units, ...nights) !== undefined;
+  const found = await ctx.db.getMany('booking_nights', nights.flatMap((n) => units.map((u) => nightId(u, n))));
+  return found.size > 0;
 }
 
 type StayInput = { roomId: unknown; checkIn: unknown; checkOut: unknown; guests: unknown };
 
-function parseStay(ctx: Ctx, input: StayInput) {
+async function parseStay(ctx: Ctx, input: StayInput) {
   if (!isRoomId(input.roomId)) throw new HttpError(400, 'Please choose a room.', 'INVALID_ROOM', 'roomId');
-  const room = getRoom(ctx, input.roomId);
+  const room = await getRoom(ctx, input.roomId);
   if (!room || room.bookable !== 1) throw new HttpError(400, 'This room can’t be booked online right now.', 'ROOM_UNAVAILABLE', 'roomId');
   const checkIn = String(input.checkIn ?? '');
   const checkOut = String(input.checkOut ?? '');
@@ -155,9 +176,9 @@ function parseStay(ctx: Ctx, input: StayInput) {
   return { room, checkIn, checkOut, guests, nights: nightsBetween(checkIn, checkOut) };
 }
 
-export function quote(ctx: Ctx, input: StayInput): Quote {
-  sweepExpiredHolds(ctx);
-  const s = parseStay(ctx, input);
+export async function quote(ctx: Ctx, input: StayInput): Promise<Quote> {
+  await sweepExpiredHolds(ctx);
+  const s = await parseStay(ctx, input);
   const p = priceLines(s.room, s.nights);
   return {
     roomId: s.room.id as RoomId,
@@ -170,7 +191,7 @@ export function quote(ctx: Ctx, input: StayInput): Quote {
     lines: p.lines,
     totalPaise: p.total,
     payNowPaise: p.payNow,
-    available: !unitsTaken(ctx, roomUnits(s.room), stayNights(s.checkIn, s.checkOut)),
+    available: !(await unitsTaken(ctx, roomUnits(s.room), stayNights(s.checkIn, s.checkOut))),
   };
 }
 
@@ -182,31 +203,44 @@ export function newRef(): string {
   return 'GS' + Array.from(bytes, (b) => REF_ALPHABET[b % REF_ALPHABET.length]).join('');
 }
 
-/** Inserts night holds for a booking; throws HttpError 409 if any unit-night is taken. */
-export function holdNights(ctx: Ctx, bookingId: number, units: Unit[], checkIn: string, checkOut: string) {
-  const ins = ctx.db.prepare('INSERT INTO booking_nights (booking_id, unit, night) VALUES (?, ?, ?)');
+/** A booking ID nobody has yet. */
+export async function uniqueRef(ctx: Ctx): Promise<string> {
+  let ref = newRef();
+  while (await getBookingByRef(ctx, ref)) ref = newRef();
+  return ref;
+}
+
+/** Holds a booking's nights; throws HttpError 409 if any unit-night is taken (then none are held). */
+export async function holdNights(ctx: Ctx, bookingId: number, units: Unit[], checkIn: string, checkOut: string) {
   try {
-    for (const night of stayNights(checkIn, checkOut)) for (const u of units) ins.run(bookingId, u, night);
+    await ctx.db.tx(async () => {
+      for (const night of stayNights(checkIn, checkOut)) {
+        for (const unit of units) await ctx.db.create('booking_nights', nightId(unit, night), { booking_id: bookingId, unit, night });
+      }
+    });
   } catch (e) {
-    if (String((e as Error).message).includes('UNIQUE')) {
+    if (e instanceof ConflictError) {
       throw new HttpError(409, 'Sorry — this room is no longer available for those dates. Please choose other dates.', 'NOT_AVAILABLE');
     }
     throw e;
   }
 }
 
-export function releaseNights(ctx: Ctx, bookingId: number) {
-  ctx.db.prepare('DELETE FROM booking_nights WHERE booking_id = ?').run(bookingId);
+export function heldNights(ctx: Ctx, bookingId: number) {
+  return ctx.db.query<{ booking_id: number; unit: Unit; night: string }>('booking_nights', { where: [['booking_id', '==', bookingId]] });
+}
+
+export async function releaseNights(ctx: Ctx, bookingId: number) {
+  for (const n of await heldNights(ctx, bookingId)) await ctx.db.delete('booking_nights', nightId(n.unit, n.night));
 }
 
 /** Re-acquires nights for a booking whose hold had been released (e.g. paid after expiry). Returns false if taken. */
-export function tryReacquireNights(ctx: Ctx, booking: BookingRow): boolean {
-  const held = ctx.db.prepare('SELECT COUNT(*) AS n FROM booking_nights WHERE booking_id = ?').get(booking.id) as { n: number };
-  if (held.n > 0) return true;
-  const room = getRoom(ctx, booking.room_id);
+export async function tryReacquireNights(ctx: Ctx, booking: BookingRow): Promise<boolean> {
+  if ((await heldNights(ctx, booking.id)).length > 0) return true;
+  const room = await getRoom(ctx, booking.room_id);
   if (!room) return false;
   try {
-    holdNights(ctx, booking.id, roomUnits(room), booking.check_in, booking.check_out);
+    await holdNights(ctx, booking.id, roomUnits(room), booking.check_in, booking.check_out);
     return true;
   } catch (e) {
     if (e instanceof HttpError && e.status === 409) return false;
@@ -216,9 +250,9 @@ export function tryReacquireNights(ctx: Ctx, booking: BookingRow): boolean {
 
 export type CreateBookingInput = StayInput & { name: unknown; phone: unknown; email: unknown; message?: unknown };
 
-export function createBooking(ctx: Ctx, input: CreateBookingInput, userUid: string | null = null): { booking: BookingRow; token: string } {
-  sweepExpiredHolds(ctx);
-  const s = parseStay(ctx, input);
+export async function createBooking(ctx: Ctx, input: CreateBookingInput, userUid: string | null = null): Promise<{ booking: BookingRow; token: string }> {
+  await sweepExpiredHolds(ctx);
+  const s = await parseStay(ctx, input);
 
   const name = String(input.name ?? '').trim().replace(/\s+/g, ' ');
   if (name.length < 2 || name.length > 80) throw new HttpError(400, 'Please enter your full name.', 'INVALID_NAME', 'name');
@@ -234,47 +268,64 @@ export function createBooking(ctx: Ctx, input: CreateBookingInput, userUid: stri
   const now = iso(ctx);
   const holdExpires = new Date(ctx.now().getTime() + ctx.config.holdMinutes * 60_000).toISOString();
 
-  const booking = tx(ctx.db, () => {
-    let ref = newRef();
-    while (ctx.db.prepare('SELECT 1 FROM bookings WHERE ref = ?').get(ref)) ref = newRef();
-    const r = ctx.db
-      .prepare(
-        `INSERT INTO bookings (ref, token_hash, status, payment_status, room_id, room_name, check_in, check_out, nights, guests,
-           nightly_paise, lines_json, total_paise, pay_now_paise, guest_name, guest_phone, guest_email, guest_message,
-           hold_expires_at, created_at, updated_at, user_uid)
-         VALUES (?, ?, 'pending_payment', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        ref, sha256(token), s.room.id, s.room.name, s.checkIn, s.checkOut, s.nights, s.guests,
-        s.room.price_paise, JSON.stringify(p.lines), p.total, p.payNow, name, phone, email, message,
-        holdExpires, now, now, userUid,
-      );
-    const id = Number(r.lastInsertRowid);
-    holdNights(ctx, id, roomUnits(s.room), s.checkIn, s.checkOut);
-    audit(ctx, 'guest', 'booking.created', id, { ref, room: s.room.id, checkIn: s.checkIn, checkOut: s.checkOut, totalPaise: p.total, userUid });
+  const booking = await ctx.db.tx(async () => {
+    const ref = await uniqueRef(ctx);
+    const row: Omit<BookingRow, 'id'> = {
+      ref,
+      token_hash: sha256(token),
+      status: 'pending_payment',
+      payment_status: 'pending',
+      needs_attention: null,
+      room_id: s.room.id,
+      room_name: s.room.name,
+      check_in: s.checkIn,
+      check_out: s.checkOut,
+      nights: s.nights,
+      guests: s.guests,
+      nightly_paise: s.room.price_paise,
+      lines_json: JSON.stringify(p.lines),
+      total_paise: p.total,
+      pay_now_paise: p.payNow,
+      guest_name: name,
+      guest_phone: phone,
+      guest_email: email,
+      guest_message: message,
+      hold_expires_at: holdExpires,
+      created_at: now,
+      updated_at: now,
+      confirmed_at: null,
+      user_uid: userUid,
+      kind: 'booking',
+      source: 'website_online',
+      occasion: '',
+      notes: '',
+      request_id: null,
+    };
+    const id = Number(await ctx.db.insert('bookings', row));
+    await holdNights(ctx, id, roomUnits(s.room), s.checkIn, s.checkOut);
+    await audit(ctx, 'guest', 'booking.created', id, { ref, room: s.room.id, checkIn: s.checkIn, checkOut: s.checkOut, totalPaise: p.total, userUid });
     queueBookingSync(ctx, id);
-    return getBookingById(ctx, id)!;
+    return (await getBookingById(ctx, id))!;
   });
   return { booking, token };
 }
 
 // ---------- lookup ----------
 
-export function getBookingById(ctx: Ctx, id: number): BookingRow | undefined {
-  return ctx.db.prepare('SELECT * FROM bookings WHERE id = ?').get(id) as BookingRow | undefined;
+export function getBookingById(ctx: Ctx, id: number): Promise<BookingRow | undefined> {
+  return ctx.db.get<BookingRow>('bookings', id);
 }
 
-export function getBookingByRef(ctx: Ctx, ref: string): BookingRow | undefined {
-  return ctx.db.prepare('SELECT * FROM bookings WHERE ref = ?').get(String(ref).toUpperCase()) as BookingRow | undefined;
+export async function getBookingByRef(ctx: Ctx, ref: string): Promise<BookingRow | undefined> {
+  return (await ctx.db.query<BookingRow>('bookings', { where: [['ref', '==', String(ref).toUpperCase()]] }))[0];
 }
 
-/** Guest access: booking ref + the private token from their booking link. Constant-time compare. */
 /**
  * Guest access: either the private token from their booking link, or being
- * signed in as the Firebase user who made the booking.
+ * signed in as the Firebase user who made the booking. Constant-time compare.
  */
-export function getBookingForGuest(ctx: Ctx, ref: string, token: string | undefined, uid?: string | null): BookingRow {
-  const b = getBookingByRef(ctx, ref);
+export async function getBookingForGuest(ctx: Ctx, ref: string, token: string | undefined, uid?: string | null): Promise<BookingRow> {
+  const b = await getBookingByRef(ctx, ref);
   const tokenOk =
     b !== undefined &&
     typeof token === 'string' &&
@@ -285,25 +336,24 @@ export function getBookingForGuest(ctx: Ctx, ref: string, token: string | undefi
   return b!;
 }
 
-export function paymentsFor(ctx: Ctx, bookingId: number): PaymentRow[] {
-  return ctx.db.prepare('SELECT * FROM payments WHERE booking_id = ? ORDER BY id').all(bookingId) as PaymentRow[];
+export function paymentsFor(ctx: Ctx, bookingId: number): Promise<PaymentRow[]> {
+  return ctx.db.query<PaymentRow>('payments', { where: [['booking_id', '==', bookingId]], orderBy: [['id']] });
 }
 
-export function amountPaid(ctx: Ctx, bookingId: number): number {
-  const paid = ctx.db
-    .prepare(`SELECT COALESCE(SUM(amount_paise), 0) AS s FROM payments WHERE booking_id = ? AND state IN ('completed', 'verified')`)
-    .get(bookingId) as { s: number };
-  const refunded = ctx.db
-    .prepare(
-      `SELECT COALESCE(SUM(r.amount_paise), 0) AS s FROM refunds r JOIN payments p ON p.id = r.payment_id
-       WHERE p.booking_id = ? AND r.state = 'completed'`,
-    )
-    .get(bookingId) as { s: number };
-  return paid.s - refunded.s;
+export function refundsFor(ctx: Ctx, bookingId: number): Promise<RefundRow[]> {
+  return ctx.db.query<RefundRow>('refunds', { where: [['booking_id', '==', bookingId]], orderBy: [['id']] });
 }
 
-export function toView(ctx: Ctx, b: BookingRow): BookingView {
-  const pays = paymentsFor(ctx, b.id);
+export async function amountPaid(ctx: Ctx, bookingId: number): Promise<number> {
+  const paid = (await paymentsFor(ctx, bookingId))
+    .filter((p) => p.state === 'completed' || p.state === 'verified')
+    .reduce((s, p) => s + p.amount_paise, 0);
+  const refunded = (await refundsFor(ctx, bookingId)).filter((r) => r.state === 'completed').reduce((s, r) => s + r.amount_paise, 0);
+  return paid - refunded;
+}
+
+export async function toView(ctx: Ctx, b: BookingRow): Promise<BookingView> {
+  const pays = await paymentsFor(ctx, b.id);
   const last = pays.at(-1);
   return {
     ref: b.ref,
@@ -319,7 +369,7 @@ export function toView(ctx: Ctx, b: BookingRow): BookingView {
     lines: JSON.parse(b.lines_json) as PriceLine[],
     totalPaise: b.total_paise,
     payNowPaise: b.pay_now_paise,
-    amountPaidPaise: amountPaid(ctx, b.id),
+    amountPaidPaise: await amountPaid(ctx, b.id),
     holdExpiresAt: b.hold_expires_at,
     createdAt: b.created_at,
     confirmedAt: b.confirmed_at,
@@ -336,28 +386,30 @@ export function toView(ctx: Ctx, b: BookingRow): BookingView {
 
 // ---------- status changes ----------
 
-export function setBooking(ctx: Ctx, id: number, fields: Partial<Pick<BookingRow, 'status' | 'payment_status' | 'needs_attention' | 'hold_expires_at' | 'confirmed_at'>>) {
-  const keys = Object.keys(fields) as (keyof typeof fields)[];
-  if (keys.length === 0) return;
-  ctx.db
-    .prepare(`UPDATE bookings SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
-    .run(...keys.map((k) => fields[k] ?? null), iso(ctx), id);
+export async function setBooking(
+  ctx: Ctx,
+  id: number,
+  fields: Partial<Pick<BookingRow, 'status' | 'payment_status' | 'needs_attention' | 'hold_expires_at' | 'confirmed_at'>>,
+) {
+  if (Object.keys(fields).length === 0) return;
+  await ctx.db.update('bookings', id, { ...fields, updated_at: iso(ctx) });
   queueBookingSync(ctx, id);
 }
 
-// ---------- copies of the booking elsewhere: guest's Firestore + owner's Google Sheet ----------
+// ---------- copies of the booking elsewhere: guest's Firestore copy + owner's Google Sheet ----------
 
-const syncQueued = new WeakMap<DB, Set<number>>();
+const syncQueued = new WeakMap<Store, Set<number>>();
 
 /**
  * After the current transaction commits, pushes this booking's latest state
  * to (a) the guest's Firestore copy users/{uid}/bookings/{ref} and (b) the
  * owner's Google Sheet "Bookings" tab. Several changes in one request sync
- * once. Best effort: SQLite is the source of truth, so failures are only logged.
+ * once. Best effort: the bookings collection is the source of truth, so
+ * failures are only logged.
  */
 export function queueBookingSync(ctx: Ctx, bookingId: number) {
   // Open admin screens refresh after the change commits.
-  onCommit(ctx.db, () => emitChange('bookings'));
+  ctx.db.onCommit(() => markChanged(ctx, 'bookings'));
   const toFirestore = Boolean(ctx.firebase?.mirrorBooking);
   const toSheet = sheetsConfigured(ctx.config.notify);
   if (!toFirestore && !toSheet) return;
@@ -365,49 +417,63 @@ export function queueBookingSync(ctx: Ctx, bookingId: number) {
   if (set.has(bookingId)) return;
   set.add(bookingId);
   syncQueued.set(ctx.db, set);
-  onCommit(ctx.db, () => {
-    set.delete(bookingId);
-    const b = getBookingById(ctx, bookingId);
-    if (!b) return;
-    if (toSheet) syncBookingToSheet(ctx.config.notify, bookingSheetRow(b, paymentsFor(ctx, b.id), amountPaid(ctx, b.id)));
-    if (!b.user_uid || !ctx.firebase?.mirrorBooking) return;
-    const v = toView(ctx, b);
-    ctx.firebase
-      .mirrorBooking(b.user_uid, b.ref, {
-        ref: v.ref,
-        status: v.status,
-        paymentStatus: v.paymentStatus,
-        roomId: v.roomId,
-        roomName: v.roomName,
-        checkIn: v.checkIn,
-        checkOut: v.checkOut,
-        nights: v.nights,
-        guests: v.guests,
-        totalPaise: v.totalPaise,
-        amountPaidPaise: v.amountPaidPaise,
-        createdAt: v.createdAt,
-        confirmedAt: v.confirmedAt,
-        updatedAt: b.updated_at,
-      })
-      .catch((e) => console.error(`[firebase] booking copy failed for ${b.ref}:`, (e as Error).message));
-  });
+  ctx.db.onCommit(() =>
+    inBackground(`sync booking ${bookingId}`, async () => {
+      set.delete(bookingId);
+      const b = await getBookingById(ctx, bookingId);
+      if (!b) return;
+      if (toSheet) syncBookingToSheet(ctx.config.notify, bookingSheetRow(b, await paymentsFor(ctx, b.id), await amountPaid(ctx, b.id)));
+      if (!b.user_uid || !ctx.firebase?.mirrorBooking) return;
+      const v = await toView(ctx, b);
+      await ctx.firebase
+        .mirrorBooking(b.user_uid, b.ref, {
+          ref: v.ref,
+          status: v.status,
+          paymentStatus: v.paymentStatus,
+          roomId: v.roomId,
+          roomName: v.roomName,
+          checkIn: v.checkIn,
+          checkOut: v.checkOut,
+          nights: v.nights,
+          guests: v.guests,
+          totalPaise: v.totalPaise,
+          amountPaidPaise: v.amountPaidPaise,
+          createdAt: v.createdAt,
+          confirmedAt: v.confirmedAt,
+          updatedAt: b.updated_at,
+        })
+        .catch((e) => console.error(`[firebase] booking copy failed for ${b.ref}:`, (e as Error).message));
+    }),
+  );
 }
+
+const lastSweep = new WeakMap<Store, number>();
 
 /**
  * Expires unpaid holds whose time is up, releasing their nights. A late
  * gateway payment on an expired booking is still honoured by
  * reconcileGatewayPayment (re-acquiring the nights, or flagging for refund).
+ *
+ * Serverless hosting has no always-on timer, so this runs whenever
+ * availability matters (quotes, bookings, calendars). It is skipped when it
+ * ran in the last 15 seconds (by the server clock), to save database reads.
  */
-export function sweepExpiredHolds(ctx: Ctx) {
+export async function sweepExpiredHolds(ctx: Ctx, force = false) {
+  const nowMs = ctx.now().getTime();
+  const last = lastSweep.get(ctx.db);
+  if (!force && last !== undefined && Math.abs(nowMs - last) < 15_000) return 0;
+  lastSweep.set(ctx.db, nowMs);
   const now = iso(ctx);
-  const stale = ctx.db
-    .prepare(`SELECT * FROM bookings WHERE status = 'pending_payment' AND hold_expires_at IS NOT NULL AND hold_expires_at < ?`)
-    .all(now) as BookingRow[];
+  const stale = (await ctx.db.query<BookingRow>('bookings', { where: [['status', '==', 'pending_payment']] })).filter(
+    (b) => b.hold_expires_at !== null && b.hold_expires_at < now,
+  );
   for (const b of stale) {
-    tx(ctx.db, () => {
-      releaseNights(ctx, b.id);
-      setBooking(ctx, b.id, { status: 'expired', hold_expires_at: null });
-      audit(ctx, 'system', 'booking.expired', b.id, { holdExpiredAt: b.hold_expires_at });
+    await ctx.db.tx(async () => {
+      const cur = await getBookingById(ctx, b.id);
+      if (cur?.status !== 'pending_payment') return; // paid or cancelled meanwhile
+      await releaseNights(ctx, b.id);
+      await setBooking(ctx, b.id, { status: 'expired', hold_expires_at: null });
+      await audit(ctx, 'system', 'booking.expired', b.id, { holdExpiredAt: b.hold_expires_at });
     });
   }
   return stale.length;

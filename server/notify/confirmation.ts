@@ -13,19 +13,19 @@ import { escapeHtml } from './telegram.ts';
 
 const RETRY_MS = 30_000;
 
-/** Audit from background work; never throws (the DB may be closing). */
-export function safeAudit(ctx: Ctx, action: string, bookingId: number, details: Record<string, unknown>) {
+/** Audit from background work; never throws (the database may be unreachable). */
+export async function safeAudit(ctx: Ctx, action: string, bookingId: number, details: Record<string, unknown>) {
   try {
-    audit(ctx, 'system', action, bookingId, details);
+    await audit(ctx, 'system', action, bookingId, details);
   } catch (e) {
     console.warn(`[audit] could not record ${action}:`, (e as Error).message);
   }
 }
 
-export function buildConfirmationEmail(ctx: Ctx, bookingId: number): ConfirmationEmail | null {
-  const b = getBookingById(ctx, bookingId);
+export async function buildConfirmationEmail(ctx: Ctx, bookingId: number): Promise<ConfirmationEmail | null> {
+  const b = await getBookingById(ctx, bookingId);
   if (!b || b.status !== 'confirmed') return null;
-  const paid = paymentsFor(ctx, b.id).filter((p) => p.state === 'completed' || p.state === 'verified').at(-1);
+  const paid = (await paymentsFor(ctx, b.id)).filter((p) => p.state === 'completed' || p.state === 'verified').at(-1);
   const method = paid?.method === 'gateway' ? `PhonePe online${paid.gateway_payment_mode ? ` (${paid.gateway_payment_mode})` : ''}` : 'UPI QR (verified by owner)';
   const reference = (paid?.method === 'gateway' ? paid.gateway_transaction_id ?? paid.merchant_order_id : paid?.utr) ?? '—';
   const confirmedAt = formatIST(new Date(b.confirmed_at ?? ctx.now().toISOString()));
@@ -41,7 +41,7 @@ export function buildConfirmationEmail(ctx: Ctx, bookingId: number): Confirmatio
     checkOut: formatISODate(b.check_out),
     nights: b.nights,
     guests: b.guests,
-    amountPaid: formatPaise(amountPaid(ctx, b.id)),
+    amountPaid: formatPaise(await amountPaid(ctx, b.id)),
     method,
     reference,
     confirmedAt,
@@ -99,15 +99,21 @@ export async function notifyBookingConfirmed(ctx: Ctx, bookingId: number, attemp
     console.warn('[confirm-email] Not sent — SHEETS_WEBHOOK_URL / SHEETS_SECRET not configured.');
     return;
   }
-  const email = buildConfirmationEmail(ctx, bookingId);
+  const email = await buildConfirmationEmail(ctx, bookingId);
   if (!email) return;
   try {
     await sendConfirmationEmail(ctx.config.notify, email);
-    safeAudit(ctx, 'email.confirmation_sent', bookingId, { attempt });
+    await safeAudit(ctx, 'email.confirmation_sent', bookingId, { attempt });
   } catch (e) {
     const error = (e as Error).message;
     console.error(`[confirm-email] ${email.booking.ref} attempt ${attempt} failed:`, error);
-    safeAudit(ctx, 'email.confirmation_failed', bookingId, { attempt, error });
-    if (attempt < 2) setTimeout(() => inBackground('confirmation email retry', () => notifyBookingConfirmed(ctx, bookingId, attempt + 1)), RETRY_MS).unref();
+    await safeAudit(ctx, 'email.confirmation_failed', bookingId, { attempt, error });
+    if (attempt >= 2) return;
+    // On Vercel the retry must happen inside this task (no timers survive the response).
+    if (process.env.VERCEL) {
+      await new Promise((r) => setTimeout(r, 3000));
+      return notifyBookingConfirmed(ctx, bookingId, attempt + 1);
+    }
+    setTimeout(() => inBackground('confirmation email retry', () => notifyBookingConfirmed(ctx, bookingId, attempt + 1)), RETRY_MS).unref();
   }
 }

@@ -1,14 +1,23 @@
 // Tracks fire-and-forget work (owner emails, Sheet rows, Telegram messages)
 // so shutdown and tests can wait for it to finish instead of guessing.
+//
+// On Vercel a function may be frozen as soon as the response is sent, so each
+// task is also handed to waitUntil(), which keeps the function alive until
+// the task finishes.
+
+import { waitUntil } from '@vercel/functions';
 
 let pending = 0;
+const onVercel = Boolean(process.env.VERCEL);
 
 /** Runs a background task; never throws, failures are logged. */
 export function inBackground(label: string, task: () => Promise<unknown>): void {
   pending++;
-  task()
+  const p = Promise.resolve()
+    .then(task)
     .catch((e) => console.error(`[background] ${label} failed:`, (e as Error)?.message ?? e))
     .finally(() => pending--);
+  if (onVercel) waitUntil(p);
 }
 
 export const backgroundPending = () => pending;

@@ -3,39 +3,69 @@
 Homestay website for Golden Stay, Maligaon, Guwahati. Built by Webro Studios.
 
 - **Website**: React + TypeScript + Vite + Tailwind CSS v4 (prerendered homepage).
-- **Server**: Node.js + Express + SQLite (`node:sqlite`, no native build). Serves the site, the booking API, PhonePe webhooks and the admin.
+- **Server**: Node.js + Express, deployed as one **Vercel** function (`/api/*`). It also runs as a normal Node server (`npm start`).
+- **Database**: **Cloud Firestore** (Firebase project `goldenstay-b847e`). Local development and tests use the Firestore emulator, never the real data.
 - Guests can **send an enquiry** (form → instant Telegram message to the owner + a row in a Google Sheet; see **[NOTIFICATIONS_SETUP.md](NOTIFICATIONS_SETUP.md)**), use the WhatsApp/call buttons, or **book and pay online** by QR (`/book/`). Booking online requires a guest account (Firebase email + password) — see **[FIREBASE_SETUP.md](FIREBASE_SETUP.md)**; guests see their bookings at `/account/`.
 
 ## Commands
 
 ```bash
 npm install
-npm run dev          # API on :8787 + Vite on :5173 (open http://localhost:5173)
-npm run dev:emulators # same, but against local Firebase emulators (no real accounts)
-npm test             # 100 server tests (pricing, availability, gateway, QR, admin, enquiries, emails, sign-in, security)
-npm run test:rules   # 9 Firestore security-rules tests (Firestore emulator, needs Java)
-node scripts/send-test-enquiry.mjs   # send a sample enquiry to a running server
+npm run dev          # API on :8787 + Vite on :5173 (open http://localhost:5173); starts the Firestore emulator when no key is set
+npm run dev:emulators # same, but Auth is emulated too (no real accounts)
+npm test             # 127 server tests on the Firestore emulator (pricing, availability, double booking, gateway, QR, admin, requests, emails, sign-in, security)
+npm run test:rules   # 10 Firestore security-rules tests (Firestore emulator)
 npm run build        # type-check, build all pages, prerender the homepage into dist/
-npm start            # production server: serves dist/ + /api on PORT (default 8787)
-npm run admin:hash   # create the admin password hash for .env
+npm run vercel-build # build + package for Vercel into .vercel/output (what Vercel runs)
+node scripts/vercel-local.mjs        # serve .vercel/output locally, the way Vercel does
+npm start            # self-hosted server: serves dist/ + /api on PORT (default 8787)
+npm run admin:hash   # create the backup admin password hash
 npm run images       # regenerate WebP 400/800/1600w from public/images/*
 ```
 
-Requires **Node.js 22.13+** (built-in SQLite).
+Requires **Node.js 22.13+**. The tests and `npm run dev` start the Firestore emulator, which needs **Java 11+** installed.
 
-## Deploying
+## Deploying on Vercel
 
-1. Copy `.env.example` to `.env` on the server and fill it in (`SITE_URL`, `ADMIN_PASSWORD_HASH`, …). `.env` is git-ignored — never commit it.
-2. `npm ci && npm run build && npm start` behind HTTPS (nginx / Caddy, or a host such as Railway / Render).
-3. The database is a single file (`DATABASE_PATH`, default `data/golden-stay.db`). Use a **persistent disk** and back the file up regularly (e.g. nightly copy of `data/`).
-4. Set `TRUST_PROXY=true` when behind a reverse proxy so rate limits see real client IPs.
+The repo builds itself for Vercel (`vercel.json` → `npm run vercel-build`, Vercel's Build Output API): the pages go to Vercel's CDN, and every `/api/*` request runs the server as one Node.js function.
 
-Admin: `https://your-domain/admin/` (password from `ADMIN_PASSWORD_HASH`). `/admin/` and `/booking/` pages are `noindex`.
+1. **Firestore**: in the Firebase console (project `goldenstay-b847e`) make sure Firestore is created (Native mode, region e.g. `asia-south1`). Deploy the rules once: `npm run firebase:deploy-rules`.
+2. **Service-account key**: Firebase console → Project settings → Service accounts → *Generate new private key*. Keep the JSON file private.
+3. **Vercel project**: *Add New → Project*, import the GitHub repo. Framework preset: *Other* (the repo's `vercel.json` sets the build).
+4. **Environment variables** (Project → Settings → Environment Variables, for Production and Preview):
+
+   | Variable | Value |
+   | --- | --- |
+   | `NODE_ENV` | `production` |
+   | `SITE_URL` | the site's `https://` address |
+   | `FIREBASE_PROJECT_ID` | `goldenstay-b847e` |
+   | `FIREBASE_SERVICE_ACCOUNT` | the whole service-account JSON on one line (secret) |
+   | `VITE_FIREBASE_*` (6 values) | from Firebase → Project settings → Your apps (public; needed at build time) |
+   | `ADMIN_EMAILS` | `goldenstay2026@gmail.com` |
+   | `ADMIN_PASSWORD_HASH` | backup admin password (optional, secret) |
+   | `OWNER_LINK_SECRET` | 32+ random characters (secret) |
+   | `SHEETS_WEBHOOK_URL`, `SHEETS_SECRET` | Apps Script URL + shared secret (secret) |
+   | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | optional |
+
+5. **Deploy**, then in Firebase → Authentication → Settings → *Authorized domains* add the Vercel domain (and your own domain).
+6. Check: the Book page shows a price for chosen dates, `/admin/` lets the owner sign in.
+
+On Vercel there is no always-on timer: unpaid holds are released whenever availability is next checked, owner emails and Sheet rows are sent before the function finishes (`waitUntil`), and the admin refreshes by checking for changes every 10 seconds.
+
+**Self-hosting instead** (any Node host): set the same variables (or `FIREBASE_SERVICE_ACCOUNT_FILE` = path to the JSON), then `npm ci && npm run build && npm start` behind HTTPS with `TRUST_PROXY=true`.
+
+Admin: `https://your-domain/admin/` (owner signs in with Firebase; `ADMIN_EMAILS`). `/admin/`, `/booking/`, `/account/` and `/confirm/` are `noindex`.
+
+## Firestore usage and backups
+
+Free plan (Spark) daily allowance: 50,000 reads, 20,000 writes, 1 GiB. A calendar month view reads only the nights that are booked; the public availability answers are cached at Vercel's edge for 10 seconds; the admin's change check is 2 reads and pauses while its tab is hidden. If a day's allowance runs out, Firestore stops answering until the next day (nothing is charged on the free plan).
+
+Backups: Admin → Bookings → *All* → **CSV** (monthly), plus the Google Sheet's *Bookings* tab. For full database backups, Firestore's export (Google Cloud console) needs the paid Blaze plan.
 
 ## How booking & payment works
 
 1. Guest picks room + dates on `/book/`. The **server** prices it from the `rooms` table (price × nights; owner policy: published prices are final, no taxes or fees added, full amount paid online). Anything the browser sends as an amount is ignored.
-2. Submitting creates a **pending booking** with an ID like `GS7K3F9Q` and **holds the room** (`BOOKING_HOLD_MINUTES`, default 30). Holds are rows in `booking_nights` with a `UNIQUE(unit, night)` constraint, so two bookings can never take the same night — even under simultaneous requests. The 2BHK holds both physical rooms (it is the AC + Non-AC 1BHK together).
+2. Submitting creates a **pending booking** with an ID like `GS7K3F9Q` and **holds the room** (`BOOKING_HOLD_MINUTES`, default 30). Each held night is one Firestore document `booking_nights/{unit}_{night}` (e.g. `ac_2026-11-22`), created inside a transaction that fails if it already exists — so two bookings can never take the same night, even under simultaneous requests (tested with 8 at once). The 2BHK and the Entire Homestay hold both physical rooms.
 3. The guest lands on `/booking/?ref=…&t=…` (private link) and pays by one of:
 
 ### Method A — PhonePe Payment Gateway (off until credentials are issued)
@@ -63,7 +93,7 @@ Admin: `https://your-domain/admin/` (password from `ADMIN_PASSWORD_HASH`). `/adm
 1. Get PhonePe PG access (PhonePe Business → Payment Gateway). In the dashboard's Developer Settings note the **Client ID, Client Secret, Client Version**.
 2. Configure the webhook URL `https://your-domain/api/webhooks/phonepe` with a username + password; put the same values in `.env`.
 3. Set `PHONEPE_ENABLED=true`, `PHONEPE_ENV=sandbox`, restart, and run the UAT flow with PhonePe's sandbox (success, failure, pending).
-   - **Confirm the webhook header format** with a real sandbox webhook: PhonePe documents `Authorization: SHA256(username:password)` but not the encoding. The server accepts the hex digest (see `verifyWebhookAuth` in `server/phonepe.ts`); adjust there if PhonePe sends something else. Rejected webhooks are logged in the `webhook_events` table.
+   - **Confirm the webhook header format** with a real sandbox webhook: PhonePe documents `Authorization: SHA256(username:password)` but not the encoding. The server accepts the hex digest (see `verifyWebhookAuth` in `server/phonepe.ts`); adjust there if PhonePe sends something else. Rejected webhooks are logged in the `webhook_events` Firestore collection.
 4. Switch to `PHONEPE_ENV=production` with production credentials.
 
 Secrets live only in the server's `.env`; the browser bundle contains no credentials (checked on every build review — `grep -r PHONEPE_ dist` returns nothing).

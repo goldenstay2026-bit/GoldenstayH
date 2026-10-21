@@ -32,11 +32,14 @@ function readCookie(req: Request, name: string): string | undefined {
   return undefined;
 }
 
-export function createSession(ctx: Ctx, req: Request, res: Response) {
+type SessionRow = { token_hash: string; created_at: string; expires_at: string; ip: string | null };
+
+export async function createSession(ctx: Ctx, req: Request, res: Response) {
   const token = crypto.randomBytes(32).toString('base64url');
   const expires = new Date(ctx.now().getTime() + ctx.config.admin.sessionHours * 3_600_000);
-  ctx.db.prepare('DELETE FROM admin_sessions WHERE expires_at < ?').run(iso(ctx));
-  ctx.db.prepare('INSERT INTO admin_sessions (token_hash, created_at, expires_at, ip) VALUES (?, ?, ?, ?)').run(sha256(token), iso(ctx), expires.toISOString(), req.ip ?? null);
+  const old = await ctx.db.query<SessionRow>('admin_sessions', { where: [['expires_at', '<', iso(ctx)]] });
+  for (const o of old) await ctx.db.delete('admin_sessions', o.token_hash);
+  await ctx.db.set('admin_sessions', sha256(token), { token_hash: sha256(token), created_at: iso(ctx), expires_at: expires.toISOString(), ip: req.ip ?? null });
   res.cookie(COOKIE, token, {
     httpOnly: true,
     secure: ctx.config.nodeEnv === 'production',
@@ -46,17 +49,15 @@ export function createSession(ctx: Ctx, req: Request, res: Response) {
   });
 }
 
-export function destroySession(ctx: Ctx, req: Request, res: Response) {
+export async function destroySession(ctx: Ctx, req: Request, res: Response) {
   const token = readCookie(req, COOKIE);
-  if (token) ctx.db.prepare('DELETE FROM admin_sessions WHERE token_hash = ?').run(sha256(token));
+  if (token) await ctx.db.delete('admin_sessions', sha256(token));
   res.clearCookie(COOKIE, { path: '/api/admin' });
 }
 
-export function hasAdminSession(ctx: Ctx, req: Request): boolean {
+export async function hasAdminSession(ctx: Ctx, req: Request): Promise<boolean> {
   const token = readCookie(req, COOKIE);
-  const row = token
-    ? (ctx.db.prepare('SELECT expires_at FROM admin_sessions WHERE token_hash = ?').get(sha256(token)) as { expires_at: string } | undefined)
-    : undefined;
+  const row = token ? await ctx.db.get<SessionRow>('admin_sessions', sha256(token)) : undefined;
   return row !== undefined && row.expires_at >= iso(ctx);
 }
 
@@ -82,7 +83,7 @@ export async function adminIdentity(ctx: Ctx, req: Request): Promise<AdminIdenti
     if (!id.emailVerified) throw new HttpError(403, 'Please verify your email address first.', 'EMAIL_NOT_VERIFIED');
     return { via: 'firebase', uid: id.uid, email: id.email };
   }
-  return hasAdminSession(ctx, req) ? { via: 'session' } : null;
+  return (await hasAdminSession(ctx, req)) ? { via: 'session' } : null;
 }
 
 /** Name recorded in the audit log for an admin action. */

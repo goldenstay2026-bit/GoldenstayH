@@ -4,7 +4,7 @@
 
 import { formatPaise } from '../../shared/catalog.ts';
 import { formatISODate, formatIndianMobile } from '../../shared/validate.ts';
-import { getBookingById, type Ctx } from '../bookings.ts';
+import { getBookingById, type Ctx, type PaymentRow } from '../bookings.ts';
 import { safeAudit } from './confirmation.ts';
 import { createOwnerLinkToken } from '../ownerLinks.ts';
 import { sendOwnerEmail, sheetsConfigured } from './sheets.ts';
@@ -17,8 +17,8 @@ export function ownerReviewUrl(ctx: Ctx, paymentId: number) {
 
 export async function notifyOwnerToVerify(ctx: Ctx, bookingId: number, paymentId: number): Promise<void> {
   if (!sheetsConfigured(ctx.config.notify)) return;
-  const b = getBookingById(ctx, bookingId);
-  const p = ctx.db.prepare('SELECT * FROM payments WHERE id = ?').get(paymentId) as { utr: string | null; amount_paise: number; created_at: string } | undefined;
+  const b = await getBookingById(ctx, bookingId);
+  const p = await ctx.db.get<PaymentRow>('payments', paymentId);
   if (!b || !p) return;
 
   const url = ownerReviewUrl(ctx, paymentId);
@@ -57,10 +57,10 @@ ${rows.map(([k, v]) => `<tr><td style="border-bottom:1px solid #e2ddd7;color:#6e
 
   try {
     await sendOwnerEmail(ctx.config.notify, { subject, text, html });
-    safeAudit(ctx, 'email.verify_request_sent', bookingId, { paymentId });
+    await safeAudit(ctx, 'email.verify_request_sent', bookingId, { paymentId });
   } catch (e) {
     const error = (e as Error).message;
     console.error(`[verify-email] ${b.ref} failed:`, error);
-    safeAudit(ctx, 'email.verify_request_failed', bookingId, { paymentId, error });
+    await safeAudit(ctx, 'email.verify_request_failed', bookingId, { paymentId, error });
   }
 }

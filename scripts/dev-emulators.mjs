@@ -7,7 +7,6 @@ const emulatorEnv = {
   FIREBASE_PROJECT_ID: 'demo-goldenstay',
   FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099',
   FIRESTORE_EMULATOR_HOST: '127.0.0.1:8085',
-  DATABASE_PATH: 'data/dev-emulators.db',
   SITE_URL: 'http://localhost:5173',
 };
 const run = (cmd, env = {}) => spawn(cmd, { stdio: 'inherit', shell: true, env: { ...process.env, ...env } });

@@ -65,7 +65,7 @@ function clean(v: unknown, max: number, multiline = false): string {
 }
 
 /** Validates the request body. Throws HttpError(400) with a user-safe message on the first problem. */
-export function parseEnquiry(ctx: Ctx, body: Record<string, unknown>): Enquiry {
+export async function parseEnquiry(ctx: Ctx, body: Record<string, unknown>): Promise<Enquiry> {
   const bad = (field: string, msg: string) => new HttpError(400, msg, 'INVALID_INPUT', field);
 
   const name = clean(body.name, LIMITS.name);
@@ -107,7 +107,7 @@ export function parseEnquiry(ctx: Ctx, body: Record<string, unknown>): Enquiry {
     option = roomId === 'any' || isRoomId(roomId) ? roomId : 'any';
     if (roomId === 'any') room = 'Any available room';
     else if (isRoomId(roomId)) {
-      const r = getRoom(ctx, roomId)!;
+      const r = (await getRoom(ctx, roomId))!;
       room = `${r.name} — ${formatPaise(r.price_paise)}/night`;
     } else throw bad('room', 'Please choose a room.');
   }
@@ -180,9 +180,9 @@ export async function handleEnquiry(ctx: Ctx, req: Request, res: Response) {
     return;
   }
 
-  const enquiry = parseEnquiry(ctx, body);
+  const enquiry = await parseEnquiry(ctx, body);
   // Saved first: throws 409 DATES_TAKEN if any of these nights is already booked.
-  const request = submitRequest(ctx, {
+  const request = await submitRequest(ctx, {
     bookingType: enquiry.bookingType,
     option: enquiry.option,
     checkIn: enquiry.checkIn,

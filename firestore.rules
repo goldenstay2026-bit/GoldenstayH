@@ -6,7 +6,10 @@ rules_version = '2';
 //   users/{uid}/bookings/{ref}   copy of the guest's bookings: read-only for the guest,
 //                                written only by the server (Admin SDK bypasses these rules)
 //
-// Bookings and payments live on the server (SQLite) — this is user data only.
+// Every other collection (bookings, booking_nights, payments, refunds,
+// booking_requests, audit_log, admin_sessions, counters, meta …) is the booking
+// system's database: only the server reaches it, with its service-account key
+// (the Admin SDK bypasses these rules). Browsers can read or write none of it.
 // Deploy with:  npx firebase deploy --only firestore:rules
 
 service cloud.firestore {

@@ -99,4 +99,20 @@ describe('everything else', () => {
     await assertFails(setDoc(doc(riya(), 'bookings/GSABC234'), { status: 'confirmed' }));
     await assertFails(getDoc(doc(riya(), 'rooms/ac-1bhk')));
   });
+
+  test('the server collections (bookings, payments, guest details …) are closed to every browser', async () => {
+    const server = ['bookings/1', 'booking_nights/ac_2026-11-22', 'payments/1', 'refunds/1', 'booking_requests/1', 'audit_log/x', 'admin_sessions/x', 'counters/bookings', 'meta/changes-bookings', 'webhook_events/x'];
+    // Seed real documents (as the server would), then try them from the browser.
+    await env.withSecurityRulesDisabled(async (c) => {
+      for (const path of server) await setDoc(doc(c.firestore(), path), { guest_name: 'Arjun Das', guest_phone: '9864012345' });
+    });
+    for (const db of [riya(), anon()]) {
+      for (const path of server) {
+        await assertFails(getDoc(doc(db, path)));
+        await assertFails(setDoc(doc(db, path), { status: 'confirmed' }));
+      }
+      await assertFails(getDocs(collection(db, 'bookings')));
+      await assertFails(getDocs(collection(db, 'booking_requests')));
+    }
+  });
 });

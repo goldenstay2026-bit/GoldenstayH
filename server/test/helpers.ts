@@ -9,7 +9,8 @@ import { createApp } from '../app.ts';
 import { backgroundIdle } from '../background.ts';
 import type { Ctx } from '../bookings.ts';
 import type { Config } from '../config.ts';
-import { openDb } from '../db.ts';
+import { createStore } from '../firebase.ts';
+import type { BookingRow, PaymentRow } from '../bookings.ts';
 import { hashPassword } from '../auth.ts';
 import { createPhonePeClient } from '../phonepe.ts';
 
@@ -175,7 +176,6 @@ export async function startHarness(opts: { gateway?: boolean; rateLimits?: boole
     nodeEnv: 'test',
     port: 0,
     siteUrl: 'https://goldenstay.test',
-    dbPath: ':memory:',
     trustProxy: false,
     holdMinutes: 30,
     admin: { passwordHash: hashPassword(ADMIN_PASSWORD), sessionHours: 12, emails: ['owner@goldenstay.test'] },
@@ -192,7 +192,8 @@ export async function startHarness(opts: { gateway?: boolean; rateLimits?: boole
       apiBaseOverride: mock ? { auth: `${mock.base}/auth`, pg: `${mock.base}/pg` } : undefined,
     },
     ownerLinkSecret: OWNER_LINK_SECRET,
-    firebase: { projectId: 'demo-goldenstay', serviceAccountFile: '' },
+    // A fresh, empty Firestore (emulator) project for every harness, so test files never share data.
+    firebase: { projectId: `demo-gs-${process.pid}-${crypto.randomBytes(4).toString('hex')}`, serviceAccount: '', serviceAccountFile: '' },
     notify: notify
       ? {
           telegramBotToken: TG_TOKEN,
@@ -204,7 +205,7 @@ export async function startHarness(opts: { gateway?: boolean; rateLimits?: boole
       : { telegramBotToken: '', telegramChatId: '', sheetsWebhookUrl: '', sheetsSecret: '' },
   };
   const ctx: Ctx = {
-    db: openDb(':memory:'),
+    db: createStore(config.firebase),
     config,
     phonepe: opts.gateway ? createPhonePeClient(config.phonepe, 'test') : null,
     now: () => new Date(clock.ms),
@@ -278,6 +279,18 @@ export async function startHarness(opts: { gateway?: boolean; rateLimits?: boole
     await backgroundIdle();
   };
 
+  /** Test-only reads straight from the database. */
+  const byRef = async (ref: string) => (await ctx.db.query<BookingRow>('bookings', { where: [['ref', '==', ref]] }))[0];
+  const paymentsOf = async (ref: string) => {
+    const b = await byRef(ref);
+    return ctx.db.query<PaymentRow>('payments', { where: [['booking_id', '==', b.id]], orderBy: [['id']] });
+  };
+  const auditCount = async (ref: string, action: string) => {
+    const b = await byRef(ref);
+    return (await ctx.db.query<{ action: string }>('audit_log', { where: [['booking_id', '==', b.id]] })).filter((a) => a.action === action).length;
+  };
+  const night = (unit: string, date: string) => ctx.db.get<{ booking_id: number }>('booking_nights', `${unit}_${date}`);
+
   async function login() {
     return api('POST', '/api/admin/login', { password: ADMIN_PASSWORD });
   }
@@ -296,13 +309,16 @@ export async function startHarness(opts: { gateway?: boolean; rateLimits?: boole
     webhook,
     settle,
     login,
+    byRef,
+    paymentsOf,
+    auditCount,
+    night,
     clearCookie: () => (cookie = ''),
     close: async () => {
       await settle();
       await new Promise<void>((r) => server.close(() => r()));
       await mock?.close();
       await notify?.close();
-      ctx.db.close();
     },
   };
 }

@@ -22,10 +22,8 @@ describe('PhonePe gateway enabled (against a mock PhonePe)', () => {
   before(async () => (h = await startHarness({ gateway: true })));
   after(() => h.close());
 
-  const orderIdOf = (ref: string) =>
-    (h.ctx.db.prepare(`SELECT p.merchant_order_id AS id FROM payments p JOIN bookings b ON b.id = p.booking_id WHERE b.ref = ? ORDER BY p.id DESC`).get(ref) as { id: string }).id;
-  const audits = (ref: string, action: string) =>
-    (h.ctx.db.prepare(`SELECT COUNT(*) AS n FROM audit_log a JOIN bookings b ON b.id = a.booking_id WHERE b.ref = ? AND a.action = ?`).get(ref, action) as { n: number }).n;
+  const orderIdOf = async (ref: string) => (await h.paymentsOf(ref)).at(-1)!.merchant_order_id!;
+  const audits = (ref: string, action: string) => h.auditCount(ref, action);
 
   async function startPay(over: Record<string, unknown>) {
     const b = await h.book(over);
@@ -38,14 +36,14 @@ describe('PhonePe gateway enabled (against a mock PhonePe)', () => {
   test('creates a PhonePe order for the server-calculated amount and returns PhonePe’s checkout URL', async () => {
     const p = await startPay({ roomId: '2bhk', checkIn: '2026-10-20', checkOut: '2026-10-23' });
     assert.match(p.redirectUrl, /^https:\/\/mercury-uat\.phonepe\.com\//);
-    const order = h.mock!.orders.get(orderIdOf(p.ref))!;
+    const order = h.mock!.orders.get((await orderIdOf(p.ref)))!;
     assert.equal(order.amount, 779_700);
-    assert.match(orderIdOf(p.ref), /^[A-Za-z0-9_-]{1,63}$/);
+    assert.match((await orderIdOf(p.ref)), /^[A-Za-z0-9_-]{1,63}$/);
   });
 
   test('successful payment via authenticated webhook confirms the booking; duplicates are harmless', async () => {
     const p = await startPay({ roomId: 'ac-1bhk', checkIn: '2026-11-10', checkOut: '2026-11-12' });
-    const oid = orderIdOf(p.ref);
+    const oid = (await orderIdOf(p.ref));
     h.mock!.orders.get(oid)!.state = 'COMPLETED';
     for (let i = 0; i < 3; i++) assert.equal((await h.webhook('checkout.order.completed', oid)).status, 200);
     await h.settle();
@@ -53,12 +51,12 @@ describe('PhonePe gateway enabled (against a mock PhonePe)', () => {
     assert.equal(v.json.status, 'confirmed');
     assert.equal(v.json.paymentStatus, 'successful');
     assert.equal(v.json.amountPaidPaise, p.totalPaise);
-    assert.equal(audits(p.ref, 'booking.confirmed'), 1, 'confirmed exactly once despite 3 webhooks');
+    assert.equal((await audits(p.ref, 'booking.confirmed')), 1, 'confirmed exactly once despite 3 webhooks');
   });
 
   test('webhook with a wrong Authorization header is rejected and changes nothing', async () => {
     const p = await startPay({ roomId: 'nonac-1bhk', checkIn: '2026-11-10', checkOut: '2026-11-11' });
-    const oid = orderIdOf(p.ref);
+    const oid = (await orderIdOf(p.ref));
     h.mock!.orders.get(oid)!.state = 'COMPLETED';
     assert.equal((await h.webhook('checkout.order.completed', oid, 'not-the-hash')).status, 401);
     assert.equal((await h.webhook('checkout.order.completed', oid, '')).status, 401);
@@ -69,7 +67,7 @@ describe('PhonePe gateway enabled (against a mock PhonePe)', () => {
 
   test('a genuine-looking webhook claiming success is NOT trusted while PhonePe still says PENDING', async () => {
     const p = await startPay({ roomId: 'nonac-1bhk', checkIn: '2026-11-20', checkOut: '2026-11-21' });
-    await h.webhook('checkout.order.completed', orderIdOf(p.ref)); // payload says COMPLETED, status API says PENDING
+    await h.webhook('checkout.order.completed', (await orderIdOf(p.ref))); // payload says COMPLETED, status API says PENDING
     await h.settle();
     const v = await h.api('GET', `/api/bookings/${p.ref}`, undefined, h.guest(p.token));
     assert.equal(v.json.status, 'pending_payment');
@@ -78,14 +76,14 @@ describe('PhonePe gateway enabled (against a mock PhonePe)', () => {
 
   test('returning from PhonePe confirms via the status API even if no webhook arrives', async () => {
     const p = await startPay({ roomId: 'ac-1bhk', checkIn: '2026-12-01', checkOut: '2026-12-02' });
-    h.mock!.orders.get(orderIdOf(p.ref))!.state = 'COMPLETED';
+    h.mock!.orders.get((await orderIdOf(p.ref)))!.state = 'COMPLETED';
     const v = await h.api('GET', `/api/bookings/${p.ref}?refresh=1`, undefined, h.guest(p.token));
     assert.equal(v.json.status, 'confirmed');
   });
 
   test('failed payment: booking stays held, guest can retry with a NEW order ID', async () => {
     const p = await startPay({ roomId: 'ac-1bhk', checkIn: '2026-12-10', checkOut: '2026-12-11' });
-    const first = orderIdOf(p.ref);
+    const first = (await orderIdOf(p.ref));
     h.mock!.orders.get(first)!.state = 'FAILED';
     await h.webhook('checkout.order.failed', first, undefined, 'FAILED');
     await h.settle();
@@ -94,7 +92,7 @@ describe('PhonePe gateway enabled (against a mock PhonePe)', () => {
     assert.equal(v.json.paymentStatus, 'failed');
     const retry = await h.api('POST', `/api/bookings/${p.ref}/pay/gateway`, {}, h.guest(p.token));
     assert.equal(retry.status, 200);
-    const second = orderIdOf(p.ref);
+    const second = (await orderIdOf(p.ref));
     assert.notEqual(second, first);
     h.mock!.orders.get(second)!.state = 'COMPLETED';
     v = await h.api('GET', `/api/bookings/${p.ref}?refresh=1`, undefined, h.guest(p.token));
@@ -107,8 +105,7 @@ describe('PhonePe gateway enabled (against a mock PhonePe)', () => {
     const a = await go();
     const c = await go();
     assert.equal(a.json.redirectUrl, c.json.redirectUrl);
-    const n = h.ctx.db.prepare(`SELECT COUNT(*) AS n FROM payments p JOIN bookings b ON b.id = p.booking_id WHERE b.ref = ?`).get(b.json.booking.ref) as { n: number };
-    assert.equal(n.n, 1);
+    assert.equal((await h.paymentsOf(b.json.booking.ref)).length, 1);
   });
 
   test('PhonePe error while creating an order surfaces a retryable error', async () => {
@@ -123,22 +120,22 @@ describe('PhonePe gateway enabled (against a mock PhonePe)', () => {
 
   test('amount mismatch reported by PhonePe never confirms and is flagged', async () => {
     const p = await startPay({ roomId: 'ac-1bhk', checkIn: '2027-01-20', checkOut: '2027-01-21' });
-    const o = h.mock!.orders.get(orderIdOf(p.ref))!;
+    const o = h.mock!.orders.get((await orderIdOf(p.ref)))!;
     o.state = 'COMPLETED';
     o.reportedAmount = 100;
     const v = await h.api('GET', `/api/bookings/${p.ref}?refresh=1`, undefined, h.guest(p.token));
     assert.notEqual(v.json.status, 'confirmed');
-    const row = h.ctx.db.prepare('SELECT needs_attention FROM bookings WHERE ref = ?').get(p.ref) as { needs_attention: string };
-    assert.match(row.needs_attention, /reported 100 paise/);
+    const row = await h.byRef(p.ref);
+    assert.match(row.needs_attention ?? '', /reported 100 paise/);
   });
 
   test('payment that lands after the hold expired still confirms if the room is free', async () => {
     const p = await startPay({ roomId: 'nonac-1bhk', checkIn: '2027-02-10', checkOut: '2027-02-12' });
     h.clock.ms += 60 * 60_000; // past the extended hold
     await h.api('POST', '/api/quote', { roomId: 'ac-1bhk', checkIn: '2027-02-10', checkOut: '2027-02-11', guests: 1 }); // triggers sweep
-    assert.equal((h.ctx.db.prepare('SELECT status FROM bookings WHERE ref = ?').get(p.ref) as { status: string }).status, 'expired');
-    h.mock!.orders.get(orderIdOf(p.ref))!.state = 'COMPLETED';
-    await h.webhook('checkout.order.completed', orderIdOf(p.ref));
+    assert.equal((await h.byRef(p.ref)).status, 'expired');
+    h.mock!.orders.get((await orderIdOf(p.ref)))!.state = 'COMPLETED';
+    await h.webhook('checkout.order.completed', (await orderIdOf(p.ref)));
     await h.settle();
     const v = await h.api('GET', `/api/bookings/${p.ref}`, undefined, h.guest(p.token));
     assert.equal(v.json.status, 'confirmed');
@@ -149,20 +146,19 @@ describe('PhonePe gateway enabled (against a mock PhonePe)', () => {
     h.clock.ms += 60 * 60_000;
     const other = await h.book({ roomId: 'ac-1bhk', checkIn: '2027-03-11', checkOut: '2027-03-13', name: 'Other Guest' });
     assert.equal(other.status, 201);
-    h.mock!.orders.get(orderIdOf(p.ref))!.state = 'COMPLETED';
-    await h.webhook('checkout.order.completed', orderIdOf(p.ref));
+    h.mock!.orders.get((await orderIdOf(p.ref)))!.state = 'COMPLETED';
+    await h.webhook('checkout.order.completed', (await orderIdOf(p.ref)));
     await h.settle();
-    const row = h.ctx.db.prepare('SELECT status, payment_status, needs_attention FROM bookings WHERE ref = ?').get(p.ref) as Record<string, string>;
+    const row = await h.byRef(p.ref);
     assert.equal(row.status, 'expired');
     assert.equal(row.payment_status, 'successful');
-    assert.match(row.needs_attention, /refund/);
-    const nights = h.ctx.db.prepare(`SELECT COUNT(*) AS n FROM booking_nights WHERE unit = 'ac' AND night = '2027-03-11'`).get() as { n: number };
-    assert.equal(nights.n, 1);
+    assert.match(row.needs_attention ?? '', /refund/);
+    assert.ok(await h.night('ac', '2027-03-11'), 'the other guest keeps the night');
   });
 
   test('admin can refund a gateway payment; refund webhook completes it', async () => {
     const p = await startPay({ roomId: 'nonac-1bhk', checkIn: '2027-04-10', checkOut: '2027-04-11' });
-    h.mock!.orders.get(orderIdOf(p.ref))!.state = 'COMPLETED';
+    h.mock!.orders.get((await orderIdOf(p.ref)))!.state = 'COMPLETED';
     await h.api('GET', `/api/bookings/${p.ref}?refresh=1`, undefined, h.guest(p.token));
     await h.login();
     const detail = await h.api('GET', `/api/admin/bookings/${p.ref}`);

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
+import { ConflictError } from '../db.ts';
 import { authAs, startHarness, type Harness } from './helpers.ts';
 
 // Harness clock: 11 Oct 2026 (IST). Owner = owner@goldenstay.test (ADMIN_EMAILS).
@@ -77,9 +78,15 @@ describe('owner bookings, blocks and overlaps', () => {
     assert.equal(live.json.message, 'AC 1BHK is already booked on 22–23 Nov.');
   });
 
-  test('the database itself refuses overlapping nights (UNIQUE unit+night)', () => {
-    const id = (h.ctx.db.prepare('SELECT booking_id FROM booking_nights WHERE unit = ? AND night = ?').get('ac', '2026-11-22') as { booking_id: number }).booking_id;
-    assert.throws(() => h.ctx.db.prepare('INSERT INTO booking_nights (booking_id, unit, night) VALUES (?, ?, ?)').run(id + 1000, 'ac', '2026-11-22'), /UNIQUE/);
+  test('the database itself refuses overlapping nights (one document per room-night)', async () => {
+    const held = (await h.night('ac', '2026-11-22'))!;
+    await assert.rejects(() => h.ctx.db.create('booking_nights', 'ac_2026-11-22', { booking_id: held.booking_id + 1000, unit: 'ac', night: '2026-11-22' }), ConflictError);
+    // …also inside a transaction, as the booking code uses it
+    await assert.rejects(
+      () => h.ctx.db.tx(() => h.ctx.db.create('booking_nights', 'ac_2026-11-22', { booking_id: held.booking_id + 1000, unit: 'ac', night: '2026-11-22' })),
+      ConflictError,
+    );
+    assert.equal((await h.night('ac', '2026-11-22'))!.booking_id, held.booking_id, 'the original hold is untouched');
   });
 
   test('the check-out day stays bookable', async () => {
@@ -260,21 +267,20 @@ describe('website requests', () => {
   });
 });
 
-describe('live updates (SSE)', () => {
-  test('an admin stream receives a change event when a booking is made', async () => {
-    const ac = new AbortController();
-    const res = await fetch(`${h.base}/api/admin/events`, { headers: owner, signal: ac.signal });
-    assert.equal(res.status, 200);
-    assert.match(res.headers.get('content-type') ?? '', /text\/event-stream/);
-    const reader = res.body!.getReader();
-    const dec = new TextDecoder();
-    let text = '';
+describe('live refresh (change stamps)', () => {
+  test('a booking moves the bookings stamp; an enquiry moves the requests stamp', async () => {
+    const before = (await admin('GET', '/changes')).json;
     await manual({ optionId: 'ac-1bhk', checkIn: '2027-04-01', checkOut: '2027-04-02', guestName: 'Live Update' });
-    while (!text.includes('"topic":"bookings"')) text += dec.decode((await reader.read()).value);
-    ac.abort();
+    await h.settle();
+    const mid = (await admin('GET', '/changes')).json;
+    assert.notEqual(mid.bookings, before.bookings, 'bookings stamp changed');
+    await enquiry({ name: 'Stamp Test', checkIn: '2027-04-10', checkOut: '2027-04-11' });
+    await h.settle();
+    const after = (await admin('GET', '/changes')).json;
+    assert.notEqual(after.requests, mid.requests, 'requests stamp changed');
   });
 
-  test('the stream requires admin access', async () => {
-    assert.equal((await h.api('GET', '/api/admin/events')).status, 401);
+  test('the change stamps require admin access', async () => {
+    assert.equal((await h.api('GET', '/api/admin/changes')).status, 401);
   });
 });

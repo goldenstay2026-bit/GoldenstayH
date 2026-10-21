@@ -20,13 +20,16 @@ import {
   whatsappNumber,
   type RequestOption,
 } from './calendar.ts';
-import { addEventClient } from './events.ts';
+import { readChanges } from './changes.ts';
+import { ensureSeeded } from './db.ts';
+import { inBackground } from './background.ts';
 import { isOptionId, optionById } from '../shared/catalog.ts';
 import { addDaysISO, parseISODate, todayInIndia } from '../shared/validate.ts';
 import {
   amountPaid,
   audit,
   createBooking,
+  refundsFor,
   getBookingById,
   getBookingByRef,
   getBookingForGuest,
@@ -38,6 +41,8 @@ import {
   toView,
   type BookingRow,
   type Ctx,
+  type PaymentRow,
+  type RefundRow,
 } from './bookings.ts';
 import { alertQrSubmitted, handleEnquiry } from './enquiry.ts';
 import type { Identity } from './firebase.ts';
@@ -50,6 +55,7 @@ import {
   adminRefund,
   adminRejectQr,
   adminVerifyQr,
+  getPayment,
   getPaymentByOrderId,
   reconcileGatewayPayment,
   refreshGatewayPayments,
@@ -105,7 +111,7 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
   const rl: typeof rateLimit = opts.rateLimits === false ? () => (_req, _res, next) => next() : rateLimit;
   app.disable('x-powered-by');
   // gzip HTML, JS, CSS and JSON (about a third of the bytes on the wire — matters on mobile networks).
-  app.use(compression());
+  if (!process.env.VERCEL) app.use(compression()); // Vercel compresses responses itself
   if (ctx.config.trustProxy) app.set('trust proxy', 1);
   app.use(securityHeaders(ctx.config.nodeEnv === 'production'));
   app.use(express.json({ limit: '20kb' }));
@@ -135,10 +141,13 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
   };
 
   const api = express.Router();
-  api.use((_req, res, next) => {
+  api.use(async (_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
+    await ensureSeeded(ctx.db); // room catalogue exists (checked once per server instance)
     next();
   });
+  /** Short shared cache at Vercel's edge for public, non-personal answers (saves database reads). */
+  const edgeCache = (res: Response, seconds: number) => res.setHeader('Cache-Control', `public, max-age=0, s-maxage=${seconds}, stale-while-revalidate=${seconds * 2}`);
 
   // ---------- public ----------
 
@@ -151,9 +160,10 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
     res.json(body);
   });
 
-  api.get('/rooms', (_req, res) => {
-    res.setHeader('Cache-Control', 'public, max-age=60');
-    res.json(listRooms(ctx));
+  api.get('/rooms', async (_req, res) => {
+    const rooms = await listRooms(ctx);
+    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=60');
+    res.json(rooms);
   });
 
   // Public availability: which NIGHTS are taken — never who booked them.
@@ -162,23 +172,29 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
     if (parseISODate(d) === null) throw new HttpError(400, 'Invalid date.', 'INVALID_INPUT', field);
     return d;
   };
-  api.get('/availability', rl('availability', 240, 60_000), (req, res) => {
+  api.get('/availability', rl('availability', 240, 60_000), async (req, res) => {
     const option = String(req.query.option ?? 'any');
     if (option !== 'any' && !isOptionId(option)) throw new HttpError(400, 'Unknown room.', 'INVALID_INPUT', 'option');
     const from = dateParam(req.query.from, 'from');
     const to = dateParam(req.query.to, 'to');
     if (to <= from || to > addDaysISO(from, 190)) throw new HttpError(400, 'Choose a range of up to six months.', 'INVALID_INPUT', 'to');
-    res.json({ option, from, to, booked: bookedNights(ctx, option as RequestOption, from, to) });
+    await sweepExpiredHolds(ctx);
+    const booked = await bookedNights(ctx, option as RequestOption, from, to);
+    edgeCache(res, 10);
+    res.json({ option, from, to, booked });
   });
-  api.get('/availability/options', rl('availability', 240, 60_000), (req, res) => {
+  api.get('/availability/options', rl('availability', 240, 60_000), async (req, res) => {
     const checkIn = dateParam(req.query.checkIn, 'checkIn');
     const checkOut = dateParam(req.query.checkOut, 'checkOut');
     if (checkOut <= checkIn || checkOut > addDaysISO(checkIn, 90)) throw new HttpError(400, 'Invalid dates.', 'INVALID_INPUT', 'checkOut');
-    res.json({ checkIn, checkOut, available: optionsAvailability(ctx, checkIn, checkOut) });
+    await sweepExpiredHolds(ctx);
+    const available = await optionsAvailability(ctx, checkIn, checkOut);
+    edgeCache(res, 10);
+    res.json({ checkIn, checkOut, available });
   });
 
-  api.post('/quote', rl('quote', 120, 60_000), (req, res) => {
-    res.json(quote(ctx, req.body ?? {}));
+  api.post('/quote', rl('quote', 120, 60_000), async (req, res) => {
+    res.json(await quote(ctx, req.body ?? {}));
   });
 
   api.post(
@@ -188,8 +204,8 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
       // Guests must be signed in; the email comes from their verified Firebase account.
       const user = await requireUser(req);
       // Any client-supplied amount fields are ignored — the price comes from the database.
-      const { booking, token } = createBooking(ctx, { ...(req.body ?? {}), email: user.email }, user.uid);
-      res.status(201).json({ token, booking: toView(ctx, booking) });
+      const { booking, token } = await createBooking(ctx, { ...(req.body ?? {}), email: user.email }, user.uid);
+      res.status(201).json({ token, booking: await toView(ctx, booking) });
     }),
   );
 
@@ -199,9 +215,11 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
     rl('view', 120, 60_000),
     route(async (req, res) => {
       const user = await requireUser(req);
-      sweepExpiredHolds(ctx);
-      const rows = ctx.db.prepare('SELECT * FROM bookings WHERE user_uid = ? ORDER BY id DESC LIMIT 50').all(user.uid) as BookingRow[];
-      res.json(rows.map((b) => toView(ctx, b)));
+      await sweepExpiredHolds(ctx);
+      const rows = await ctx.db.query<BookingRow>('bookings', { where: [['user_uid', '==', user.uid]], orderBy: [['id', 'desc']], limit: 50 });
+      const views = [];
+      for (const b of rows) views.push(await toView(ctx, b));
+      res.json(views);
     }),
   );
 
@@ -212,8 +230,8 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
       const b = await guestBooking(req);
       // When the guest returns from PhonePe, ask PhonePe directly rather than waiting for the webhook.
       if (req.query.refresh === '1') await refreshGatewayPayments(ctx, b.id, 'guest-return');
-      sweepExpiredHolds(ctx);
-      res.json(toView(ctx, getBookingByRef(ctx, b.ref)!));
+      await sweepExpiredHolds(ctx);
+      res.json(await toView(ctx, (await getBookingByRef(ctx, b.ref))!));
     }),
   );
 
@@ -231,31 +249,29 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
     rl('qr', 10, 10 * 60_000),
     route(async (req, res) => {
       const b = await guestBooking(req);
-      const updated = submitQrPayment(ctx, b, req.body?.utr);
-      alertQrSubmitted(ctx, updated, paymentsFor(ctx, updated.id).filter((p) => p.method === 'qr').at(-1)?.utr ?? null);
-      res.json(toView(ctx, updated));
+      const updated = await submitQrPayment(ctx, b, req.body?.utr);
+      alertQrSubmitted(ctx, updated, (await paymentsFor(ctx, updated.id)).filter((p) => p.method === 'qr').at(-1)?.utr ?? null);
+      res.json(await toView(ctx, updated));
     }),
   );
 
   // ---------- owner's "Review & confirm booking" email link ----------
 
-  const ownerLink = (req: Request) => {
+  const ownerLink = async (req: Request) => {
     const check = verifyOwnerLinkToken(ctx.config.ownerLinkSecret, String(req.params.token), ctx.now().getTime());
     if (!check.ok) {
       throw check.reason === 'expired'
         ? new HttpError(410, 'This link has expired. Please confirm the booking from the admin page.', 'LINK_EXPIRED')
         : new HttpError(404, 'This link isn’t valid.', 'LINK_INVALID');
     }
-    const p = ctx.db.prepare('SELECT * FROM payments WHERE id = ?').get(check.paymentId) as
-      | { id: number; booking_id: number; method: string; state: string; amount_paise: number; utr: string | null; created_at: string }
-      | undefined;
-    const b = p ? getBookingById(ctx, p.booking_id) : undefined;
+    const p = await getPayment(ctx, check.paymentId);
+    const b = p ? await getBookingById(ctx, p.booking_id) : undefined;
     if (!p || !b || p.method !== 'qr') throw new HttpError(404, 'This link isn’t valid.', 'LINK_INVALID');
     return { p, b };
   };
 
-  api.get('/owner-action/:token', rl('owner-link', 30, 10 * 60_000), (req, res) => {
-    const { p, b } = ownerLink(req);
+  api.get('/owner-action/:token', rl('owner-link', 30, 10 * 60_000), async (req, res) => {
+    const { p, b } = await ownerLink(req);
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.json({
       ref: b.ref,
@@ -276,15 +292,15 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
     });
   });
 
-  api.post('/owner-action/:token', rl('owner-link', 30, 10 * 60_000), (req, res) => {
-    const { p, b } = ownerLink(req);
+  api.post('/owner-action/:token', rl('owner-link', 30, 10 * 60_000), async (req, res) => {
+    const { p, b } = await ownerLink(req);
     if (p.state !== 'submitted') throw new HttpError(409, p.state === 'verified' ? 'Already confirmed.' : 'This payment was already handled.', 'ALREADY_HANDLED');
     const decision = req.body?.decision;
     const reason = String(req.body?.reason ?? '').trim().slice(0, 300);
-    if (decision === 'confirm') adminVerifyQr(ctx, b, p.id, `Confirmed from the owner email link${reason ? ` — ${reason}` : ''}`, 'owner-email-link');
-    else if (decision === 'reject') adminRejectQr(ctx, b, p.id, `Rejected from the owner email link${reason ? ` — ${reason}` : ''}`, 'owner-email-link');
+    if (decision === 'confirm') await adminVerifyQr(ctx, b, p.id, `Confirmed from the owner email link${reason ? ` — ${reason}` : ''}`, 'owner-email-link');
+    else if (decision === 'reject') await adminRejectQr(ctx, b, p.id, `Rejected from the owner email link${reason ? ` — ${reason}` : ''}`, 'owner-email-link');
     else throw new HttpError(400, 'Choose confirm or reject.', 'BAD_DECISION');
-    res.json({ ok: true, bookingStatus: getBookingById(ctx, b.id)!.status });
+    res.json({ ok: true, bookingStatus: (await getBookingById(ctx, b.id))!.status });
   });
 
   // ---------- website enquiry form → Telegram + Google Sheets ----------
@@ -301,40 +317,47 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
 
   api.post('/bookings/:ref/cancel', rl('cancel', 10, 10 * 60_000), route(async (req, res) => {
     const b = await guestBooking(req);
-    if (b.status !== 'pending_payment' || amountPaid(ctx, b.id) > 0 || paymentsFor(ctx, b.id).some((p) => p.state === 'pending')) {
+    if (b.status !== 'pending_payment' || (await amountPaid(ctx, b.id)) > 0 || (await paymentsFor(ctx, b.id)).some((p) => p.state === 'pending')) {
       throw new HttpError(409, 'This booking can’t be cancelled online. Please contact us.', 'NOT_CANCELLABLE');
     }
-    adminCancel(ctx, b, 'Cancelled by guest before payment', 'guest');
-    res.json(toView(ctx, getBookingByRef(ctx, b.ref)!));
+    await adminCancel(ctx, b, 'Cancelled by guest before payment', 'guest');
+    res.json(await toView(ctx, (await getBookingByRef(ctx, b.ref))!));
   }));
 
   // ---------- PhonePe webhook (no rate limit, per PhonePe guidance) ----------
 
-  api.post('/webhooks/phonepe', (req, res) => {
+  api.post('/webhooks/phonepe', async (req, res) => {
     const body = (req.body ?? {}) as { event?: string; payload?: Record<string, unknown> };
     const authOk = ctx.phonepe?.verifyWebhookAuth(req.get('authorization')) ?? false;
     const merchantOrderId = typeof body.payload?.merchantOrderId === 'string' ? body.payload.merchantOrderId : null;
-    const ev = ctx.db
-      .prepare('INSERT INTO webhook_events (received_at, event, merchant_order_id, auth_ok, body_json) VALUES (?, ?, ?, ?, ?)')
-      .run(iso(ctx), String(body.event ?? ''), merchantOrderId, authOk ? 1 : 0, JSON.stringify(body).slice(0, 16_000));
+    const eventId = String(
+      await ctx.db.insert('webhook_events', {
+        received_at: iso(ctx),
+        event: String(body.event ?? ''),
+        merchant_order_id: merchantOrderId,
+        auth_ok: authOk ? 1 : 0,
+        body_json: JSON.stringify(body).slice(0, 16_000),
+        result: null,
+      }),
+    );
     if (!authOk) {
       res.status(401).json({ error: 'unauthorized' });
       return;
     }
     // Acknowledge fast (PhonePe expects 2xx within a few seconds), then process.
     res.status(200).json({ ok: true });
-    void processWebhook(ctx, Number(ev.lastInsertRowid), body).catch((e) => console.error('[webhook]', e));
+    inBackground('webhook', () => processWebhook(ctx, eventId, body));
   });
 
   // ---------- admin ----------
 
   const admin = express.Router();
-  admin.post('/login', rl('login', 5, 15 * 60_000), (req, res) => {
+  admin.post('/login', rl('login', 5, 15 * 60_000), async (req, res) => {
     const pw = String(req.body?.password ?? '');
     const ok = ctx.config.admin.passwordHash !== '' && verifyPassword(pw, ctx.config.admin.passwordHash);
-    audit(ctx, 'admin', ok ? 'admin.login' : 'admin.login_failed', null, { ip: req.ip });
+    await audit(ctx, 'admin', ok ? 'admin.login' : 'admin.login_failed', null, { ip: req.ip });
     if (!ok) throw new HttpError(401, 'Incorrect password.', 'BAD_PASSWORD');
-    createSession(ctx, req, res);
+    await createSession(ctx, req, res);
     res.json({ ok: true });
   });
   // Access probe for the admin page: always 200, so a signed-out visit doesn't log an error.
@@ -358,62 +381,76 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
       });
     }),
   );
-  admin.post('/logout', (req, res) => {
-    destroySession(ctx, req, res);
+  admin.post('/logout', async (req, res) => {
+    await destroySession(ctx, req, res);
     res.json({ ok: true });
   });
 
   const guarded = express.Router();
   guarded.use(requireAdmin(ctx));
   const actor = adminActor;
-  const byRef = (ref: unknown): BookingRow => {
-    const b = getBookingByRef(ctx, String(ref));
+  const byRef = async (ref: unknown): Promise<BookingRow> => {
+    const b = await getBookingByRef(ctx, String(ref));
     if (!b) throw new HttpError(404, 'Booking not found.', 'NOT_FOUND');
     return b;
   };
 
-  guarded.get('/bookings', (req, res) => {
-    sweepExpiredHolds(ctx);
+  /** Payments and refunds for many bookings at once (Firestore 'in' takes 30 ids per query). */
+  async function moneyFor(ids: number[]) {
+    const pays = new Map<number, PaymentRow[]>();
+    const refunds = new Map<number, RefundRow[]>();
+    for (let i = 0; i < ids.length; i += 30) {
+      const chunk = ids.slice(i, i + 30);
+      for (const p of await ctx.db.query<PaymentRow>('payments', { where: [['booking_id', 'in', chunk]], orderBy: [['id']] })) {
+        pays.set(p.booking_id, [...(pays.get(p.booking_id) ?? []), p]);
+      }
+      for (const r of await ctx.db.query<RefundRow>('refunds', { where: [['booking_id', 'in', chunk]] })) {
+        refunds.set(r.booking_id, [...(refunds.get(r.booking_id) ?? []), r]);
+      }
+    }
+    const paid = (id: number) =>
+      (pays.get(id) ?? []).filter((p) => p.state === 'completed' || p.state === 'verified').reduce((s, p) => s + p.amount_paise, 0) -
+      (refunds.get(id) ?? []).filter((r) => r.state === 'completed').reduce((s, r) => s + r.amount_paise, 0);
+    return { pays, paid };
+  }
+
+  guarded.get('/bookings', async (req, res) => {
+    await sweepExpiredHolds(ctx);
     const filter = String(req.query.filter ?? 'all');
     const view = String(req.query.view ?? '');
     const unit = String(req.query.unit ?? '');
     const q = String(req.query.q ?? '').trim();
-    const where: string[] = [];
-    const args: string[] = [];
-    if (filter === 'action') where.push(`(status = 'pending_verification' OR needs_attention IS NOT NULL)`);
-    else if (filter !== 'all') {
-      where.push('status = ?');
-      args.push(filter);
-    }
-    // Upcoming / Today (arriving, staying or leaving today) / Past
+    // Upcoming / Today (arriving, staying or leaving today) / Past. One filter goes to Firestore, the rest is applied here.
     const today = todayInIndia(ctx.now());
-    let order = 'id DESC';
-    if (view === 'upcoming') {
-      where.push('check_in > ?');
-      args.push(today);
-      order = 'check_in ASC, id';
-    } else if (view === 'today') {
-      where.push('check_in <= ? AND check_out >= ?');
-      args.push(today, today);
-      order = 'check_in ASC, id';
-    } else if (view === 'past') {
-      where.push('check_out < ?');
-      args.push(today);
-      order = 'check_in DESC, id DESC';
-    }
+    let rows: BookingRow[];
+    if (view === 'upcoming') rows = await ctx.db.query<BookingRow>('bookings', { where: [['check_in', '>', today]] });
+    else if (view === 'today') rows = (await ctx.db.query<BookingRow>('bookings', { where: [['check_out', '>=', today]] })).filter((b) => b.check_in <= today);
+    else if (view === 'past') rows = await ctx.db.query<BookingRow>('bookings', { where: [['check_out', '<', today]] });
+    else if (filter !== 'all' && filter !== 'action') rows = await ctx.db.query<BookingRow>('bookings', { where: [['status', '==', filter]] });
+    else rows = await ctx.db.query<BookingRow>('bookings');
+    if (filter === 'action') rows = rows.filter((b) => b.status === 'pending_verification' || b.needs_attention !== null);
+    else if (filter !== 'all') rows = rows.filter((b) => b.status === filter);
     // A room's filter includes the options that hold it: the 2BHK and the entire homestay.
-    if (unit === 'ac') where.push(`room_id IN ('ac-1bhk', '2bhk', 'entire')`);
-    else if (unit === 'nonac') where.push(`room_id IN ('nonac-1bhk', '2bhk', 'entire')`);
+    if (unit === 'ac') rows = rows.filter((b) => ['ac-1bhk', '2bhk', 'entire'].includes(b.room_id));
+    else if (unit === 'nonac') rows = rows.filter((b) => ['nonac-1bhk', '2bhk', 'entire'].includes(b.room_id));
     if (q) {
-      const digits = q.replace(/\D/g, '');
-      const byPhone = digits.length >= 3;
-      where.push(`(ref LIKE ? OR guest_name LIKE ? OR guest_email LIKE ?${byPhone ? ' OR guest_phone LIKE ?' : ''})`);
-      const like = `%${q}%`;
-      args.push(like, like, like, ...(byPhone ? [`%${digits.length > 10 && digits.startsWith('91') ? digits.slice(2) : digits}%`] : []));
+      const needle = q.toLowerCase();
+      const raw = q.replace(/\D/g, '');
+      const digits = raw.length > 10 && raw.startsWith('91') ? raw.slice(2) : raw;
+      rows = rows.filter(
+        (b) =>
+          b.ref.toLowerCase().includes(needle) ||
+          b.guest_name.toLowerCase().includes(needle) ||
+          b.guest_email.toLowerCase().includes(needle) ||
+          (digits.length >= 3 && b.guest_phone.replace(/\D/g, '').includes(digits)),
+      );
     }
-    const rows = ctx.db
-      .prepare(`SELECT * FROM bookings ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ${order} LIMIT 500`)
-      .all(...args) as BookingRow[];
+    const byDate = (a: BookingRow, b: BookingRow) => (a.check_in < b.check_in ? -1 : a.check_in > b.check_in ? 1 : a.id - b.id);
+    if (view === 'upcoming' || view === 'today') rows.sort(byDate);
+    else if (view === 'past') rows.sort((a, b) => byDate(b, a));
+    else rows.sort((a, b) => b.id - a.id);
+    rows = rows.slice(0, 500);
+    const money = await moneyFor(rows.filter((b) => b.source === 'website_online').map((b) => b.id));
     res.json(
       rows.map((b) => ({
         ref: b.ref,
@@ -434,16 +471,16 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
         occasion: b.occasion,
         notes: b.notes,
         totalPaise: b.total_paise,
-        amountPaidPaise: amountPaid(ctx, b.id),
-        method: paymentsFor(ctx, b.id).at(-1)?.method ?? null,
+        amountPaidPaise: money.paid(b.id),
+        method: money.pays.get(b.id)?.at(-1)?.method ?? null,
         createdAt: b.created_at,
       })),
     );
   });
 
-  guarded.get('/bookings/:ref', (req, res) => {
-    const b = byRef(req.params.ref);
-    const payments = paymentsFor(ctx, b.id).map((p) => ({
+  guarded.get('/bookings/:ref', async (req, res) => {
+    const b = await byRef(req.params.ref);
+    const payments = (await paymentsFor(ctx, b.id)).map((p) => ({
       id: p.id,
       method: p.method,
       state: p.state,
@@ -457,15 +494,21 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
       createdAt: p.created_at,
       updatedAt: p.updated_at,
     }));
-    const refunds = ctx.db
-      .prepare(
-        `SELECT r.id, r.payment_id AS paymentId, r.method, r.merchant_refund_id AS merchantRefundId, r.amount_paise AS amountPaise,
-                r.state, r.note, r.created_at AS createdAt FROM refunds r JOIN payments p ON p.id = r.payment_id WHERE p.booking_id = ? ORDER BY r.id`,
-      )
-      .all(b.id);
-    const history = ctx.db.prepare('SELECT at, actor, action, details FROM audit_log WHERE booking_id = ? ORDER BY id').all(b.id);
+    const refunds = (await refundsFor(ctx, b.id)).map((r) => ({
+      id: r.id,
+      paymentId: r.payment_id,
+      method: r.method,
+      merchantRefundId: r.merchant_refund_id,
+      amountPaise: r.amount_paise,
+      state: r.state,
+      note: r.note,
+      createdAt: r.created_at,
+    }));
+    const history = (
+      await ctx.db.query<{ at: string; actor: string; action: string; details: string }>('audit_log', { where: [['booking_id', '==', b.id]], orderBy: [['at']] })
+    ).map((h) => ({ at: h.at, actor: h.actor, action: h.action, details: h.details }));
     res.json({
-      ...toView(ctx, b),
+      ...(await toView(ctx, b)),
       needsAttention: b.needs_attention,
       guestPhone: b.guest_phone ? displayPhone(b.guest_phone) : '',
       whatsapp: b.guest_phone ? whatsappNumber(b.guest_phone) : '',
@@ -482,112 +525,106 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
     });
   });
 
-  guarded.post('/bookings/:ref/verify-qr', (req, res) => {
-    adminVerifyQr(ctx, byRef(req.params.ref), req.body?.paymentId, req.body?.note, actor(req));
+  guarded.post('/bookings/:ref/verify-qr', async (req, res) => {
+    await adminVerifyQr(ctx, await byRef(req.params.ref), req.body?.paymentId, req.body?.note, actor(req));
     res.json({ ok: true });
   });
-  guarded.post('/bookings/:ref/reject-qr', (req, res) => {
-    adminRejectQr(ctx, byRef(req.params.ref), req.body?.paymentId, req.body?.note, actor(req));
+  guarded.post('/bookings/:ref/reject-qr', async (req, res) => {
+    await adminRejectQr(ctx, await byRef(req.params.ref), req.body?.paymentId, req.body?.note, actor(req));
     res.json({ ok: true });
   });
-  guarded.post('/bookings/:ref/cancel', (req, res) => {
-    adminCancel(ctx, byRef(req.params.ref), req.body?.note, actor(req));
+  guarded.post('/bookings/:ref/cancel', async (req, res) => {
+    await adminCancel(ctx, await byRef(req.params.ref), req.body?.note, actor(req));
     res.json({ ok: true });
   });
-  guarded.post('/bookings/:ref/clear-attention', (req, res) => {
-    adminClearAttention(ctx, byRef(req.params.ref), req.body?.note, actor(req));
+  guarded.post('/bookings/:ref/clear-attention', async (req, res) => {
+    await adminClearAttention(ctx, await byRef(req.params.ref), req.body?.note, actor(req));
     res.json({ ok: true });
   });
   guarded.post(
     '/bookings/:ref/refresh',
     route(async (req, res) => {
-      const b = byRef(req.params.ref);
+      const b = await byRef(req.params.ref);
       await refreshGatewayPayments(ctx, b.id, actor(req));
-      const pending = ctx.db
-        .prepare(`SELECT r.merchant_refund_id AS id FROM refunds r JOIN payments p ON p.id = r.payment_id WHERE p.booking_id = ? AND r.state = 'pending'`)
-        .all(b.id) as { id: string }[];
-      for (const r of pending) await refreshRefund(ctx, r.id, actor(req));
+      const pending = (await refundsFor(ctx, b.id)).filter((r) => r.state === 'pending');
+      for (const r of pending) await refreshRefund(ctx, r.merchant_refund_id, actor(req));
       res.json({ ok: true });
     }),
   );
   guarded.post(
     '/bookings/:ref/refund',
     route(async (req, res) => {
-      await adminRefund(ctx, byRef(req.params.ref), req.body?.paymentId, req.body?.amount, req.body?.note, actor(req));
+      await adminRefund(ctx, await byRef(req.params.ref), req.body?.paymentId, req.body?.amount, req.body?.note, actor(req));
       res.json({ ok: true });
     }),
   );
 
   // ---------- calendar, owner bookings & blocks, website requests ----------
 
-  guarded.get('/calendar', (req, res) => {
-    sweepExpiredHolds(ctx);
+  guarded.get('/calendar', async (req, res) => {
+    await sweepExpiredHolds(ctx);
     const from = dateParam(req.query.from, 'from');
     const to = dateParam(req.query.to, 'to');
     if (to <= from || to > addDaysISO(from, 120)) throw new HttpError(400, 'Invalid range.', 'INVALID_INPUT', 'to');
-    res.json({ today: todayInIndia(ctx.now()), ...calendarData(ctx, from, to), pendingRequests: pendingRequestCount(ctx) });
+    res.json({ today: todayInIndia(ctx.now()), ...(await calendarData(ctx, from, to)), pendingRequests: await pendingRequestCount(ctx) });
   });
 
   /** Live check for the booking form: "AC 1BHK is already booked on 22–23 Nov." */
-  guarded.get('/check', (req, res) => {
+  guarded.get('/check', async (req, res) => {
     const option = String(req.query.optionId ?? '');
     if (!isOptionId(option)) throw new HttpError(400, 'Unknown option.', 'INVALID_INPUT', 'optionId');
     const checkIn = dateParam(req.query.checkIn, 'checkIn');
     const checkOut = dateParam(req.query.checkOut, 'checkOut');
     if (checkOut <= checkIn) return void res.json({ ok: false, message: 'Check-out must be after check-in.' });
-    const exclude = req.query.exclude ? getBookingByRef(ctx, String(req.query.exclude))?.id : undefined;
-    const message = conflictMessage(ctx, unitsFor(option), checkIn, checkOut, exclude);
+    const exclude = req.query.exclude ? (await getBookingByRef(ctx, String(req.query.exclude)))?.id : undefined;
+    const message = await conflictMessage(ctx, unitsFor(option), checkIn, checkOut, exclude);
     res.json({ ok: !message, message, optionName: optionById(option).name });
   });
 
-  guarded.post('/manual-bookings', (req, res) => {
-    const b = createAdminBooking(ctx, req.body ?? {}, actor(req));
+  guarded.post('/manual-bookings', async (req, res) => {
+    const b = await createAdminBooking(ctx, req.body ?? {}, actor(req));
     res.status(201).json({ ref: b.ref });
   });
-  guarded.put('/manual-bookings/:ref', (req, res) => {
-    const b = updateAdminBooking(ctx, String(req.params.ref), req.body ?? {}, actor(req));
+  guarded.put('/manual-bookings/:ref', async (req, res) => {
+    const b = await updateAdminBooking(ctx, String(req.params.ref), req.body ?? {}, actor(req));
     res.json({ ref: b.ref });
   });
 
-  guarded.get('/requests', (_req, res) => res.json(listRequests(ctx)));
-  guarded.post('/requests/:id/approve', (req, res) => {
-    const b = approveRequest(ctx, Number(req.params.id), req.body?.optionId, actor(req));
+  guarded.get('/requests', async (_req, res) => res.json(await listRequests(ctx)));
+  guarded.post('/requests/:id/approve', async (req, res) => {
+    const b = await approveRequest(ctx, Number(req.params.id), req.body?.optionId, actor(req));
     res.json({ ref: b.ref });
   });
-  guarded.post('/requests/:id/decline', (req, res) => {
-    declineRequest(ctx, Number(req.params.id), actor(req));
+  guarded.post('/requests/:id/decline', async (req, res) => {
+    await declineRequest(ctx, Number(req.params.id), actor(req));
     res.json({ ok: true });
   });
 
-  /** Live updates (Server-Sent Events, read with fetch so the Firebase token can be sent). */
-  guarded.get('/events', (req, res) => {
-    const done = addEventClient(res);
-    req.on('close', done);
-  });
+  /** Live refresh: open admin screens poll these change stamps (two document reads). */
+  guarded.get('/changes', async (_req, res) => res.json(await readChanges(ctx)));
 
-  guarded.get('/rooms', (_req, res) => res.json(listRooms(ctx)));
-  guarded.put('/rooms/:id', (req, res) => {
-    const room = ctx.db.prepare('SELECT * FROM rooms WHERE id = ?').get(String(req.params.id)) as
-      | { id: string; price_paise: number; bookable: number }
-      | undefined;
+  guarded.get('/rooms', async (_req, res) => res.json(await listRooms(ctx)));
+  guarded.put('/rooms/:id', async (req, res) => {
+    const room = await ctx.db.get<{ id: string; price_paise: number; bookable: number }>('rooms', String(req.params.id));
     if (!room) throw new HttpError(404, 'Room not found.', 'NOT_FOUND');
     const pricePaise = Math.round(Number(req.body?.price) * 100);
     const bookable = req.body?.bookable === false ? 0 : 1;
     const note = String(req.body?.note ?? '').trim();
     if (!Number.isInteger(pricePaise) || pricePaise < 100 || pricePaise > 10_000_000) throw new HttpError(400, 'Enter a nightly price between ₹1 and ₹1,00,000.', 'INVALID_PRICE', 'price');
     if (note.length < 3) throw new HttpError(400, 'Please add a short note for the audit log.', 'NOTE_REQUIRED', 'note');
-    ctx.db.prepare('UPDATE rooms SET price_paise = ?, bookable = ?, updated_at = ? WHERE id = ?').run(pricePaise, bookable, iso(ctx), room.id);
-    audit(ctx, actor(req), 'room.updated', null, { room: room.id, from: room.price_paise, to: pricePaise, bookable: bookable === 1, note });
-    res.json(listRooms(ctx));
+    await ctx.db.update('rooms', room.id, { price_paise: pricePaise, bookable, updated_at: iso(ctx) });
+    await audit(ctx, actor(req), 'room.updated', null, { room: room.id, from: room.price_paise, to: pricePaise, bookable: bookable === 1, note });
+    res.json(await listRooms(ctx));
   });
 
-  guarded.get('/audit', (req, res) => {
+  guarded.get('/audit', async (req, res) => {
     const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 200)));
-    res.json(
-      ctx.db
-        .prepare('SELECT a.at, a.actor, a.action, a.details, b.ref FROM audit_log a LEFT JOIN bookings b ON b.id = a.booking_id ORDER BY a.id DESC LIMIT ?')
-        .all(limit),
-    );
+    const rows = await ctx.db.query<{ at: string; actor: string; action: string; details: string; booking_ref: string | null }>('audit_log', {
+      orderBy: [['at', 'desc']],
+      limit,
+      serverOrder: true,
+    });
+    res.json(rows.map((a) => ({ at: a.at, actor: a.actor, action: a.action, details: a.details, ref: a.booking_ref })));
   });
 
   admin.use(guarded);
@@ -624,17 +661,17 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
  * the authoritative state is fetched from PhonePe's status APIs before
  * anything changes, so a forged or replayed body can't confirm a booking.
  */
-async function processWebhook(ctx: Ctx, eventId: number, body: { event?: string; payload?: Record<string, unknown> }) {
-  const setResult = (r: string) => ctx.db.prepare('UPDATE webhook_events SET result = ? WHERE id = ?').run(r, eventId);
+async function processWebhook(ctx: Ctx, eventId: string, body: { event?: string; payload?: Record<string, unknown> }) {
+  const setResult = (r: string) => ctx.db.update('webhook_events', eventId, { result: r });
   const event = String(body.event ?? '');
   if (!ctx.phonepe) return setResult('gateway_disabled');
 
   if (event.startsWith('checkout.order.')) {
     const id = body.payload?.merchantOrderId;
-    const p = typeof id === 'string' ? getPaymentByOrderId(ctx, id) : undefined;
+    const p = typeof id === 'string' ? await getPaymentByOrderId(ctx, id) : undefined;
     if (!p) return setResult('unknown_order');
     const status = await ctx.phonepe.orderStatus(p.merchant_order_id!);
-    reconcileGatewayPayment(ctx, p.id, status, 'phonepe-webhook');
+    await reconcileGatewayPayment(ctx, p.id, status, 'phonepe-webhook');
     return setResult(`reconciled:${status.state}`);
   }
   if (event.startsWith('pg.refund.')) {
