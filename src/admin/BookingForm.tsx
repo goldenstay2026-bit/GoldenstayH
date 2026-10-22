@@ -21,6 +21,8 @@ export type FormInit = {
   occasion?: string;
   source?: string;
   notes?: string;
+  /** Agreed total in rupees (owner bookings) */
+  totalPrice?: number;
 };
 
 const SOURCES = [
@@ -47,6 +49,7 @@ export function BookingForm({ init, onClose, onSaved }: { init: FormInit; onClos
     occasion: init.occasion ?? '',
     source: init.source && init.source !== 'block' ? init.source : 'phone',
     notes: init.notes ?? '',
+    totalPrice: init.totalPrice ? String(init.totalPrice) : '',
   });
   const set = <K extends keyof typeof v>(k: K, val: (typeof v)[K]) => setV((s) => ({ ...s, [k]: val }));
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -95,7 +98,7 @@ export function BookingForm({ init, onClose, onSaved }: { init: FormInit; onClos
     setBusy(true);
     const body = block
       ? { kind: 'block', optionId: v.optionId, checkIn: v.checkIn, checkOut: v.checkOut, reason: v.notes }
-      : { kind: 'booking', optionId: v.optionId, checkIn: v.checkIn, checkOut: v.checkOut, guestName: v.guestName, guestPhone: v.guestPhone, guests: Number(v.guests), occasion: v.occasion, source: v.source, notes: v.notes };
+      : { kind: 'booking', optionId: v.optionId, checkIn: v.checkIn, checkOut: v.checkOut, guestName: v.guestName, guestPhone: v.guestPhone, guests: Number(v.guests), occasion: v.occasion, source: v.source, notes: v.notes, totalPrice: v.totalPrice.trim() ? Number(v.totalPrice) : '' };
     try {
       const r = editing
         ? await call<{ ref: string }>(`/manual-bookings/${init.ref}`, { method: 'PUT', body })
@@ -227,6 +230,9 @@ export function BookingForm({ init, onClose, onSaved }: { init: FormInit; onClos
                       </select>
                     </Field>
                   </div>
+                  <Field id="f-price" label="Agreed total (₹)" optional error={errors.totalPrice} hint="Lets you track Paid / Partially paid. Record payments from the booking.">
+                    <input id="f-price" inputMode="numeric" className="field h-12 text-[16px]" value={v.totalPrice} onChange={(e) => set('totalPrice', e.target.value.replace(/[^\d.]/g, ''))} placeholder="e.g. 3200" />
+                  </Field>
                   <Field id="f-occasion" label="Occasion" optional>
                     <input id="f-occasion" className="field h-12 text-[16px]" value={v.occasion} onChange={(e) => set('occasion', e.target.value)} placeholder="e.g. Birthday, anniversary" maxLength={80} />
                   </Field>

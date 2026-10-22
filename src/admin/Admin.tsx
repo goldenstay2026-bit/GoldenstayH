@@ -3,7 +3,7 @@
 // Bookings · More, with live updates. Mobile-first, large type.
 
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { CalendarDays, ClipboardList, Inbox, LogOut, Menu, Plus } from 'lucide-react';
+import { Bell, CalendarDays, ClipboardList, Inbox, LayoutDashboard, LogOut, Menu, Plus, SlidersHorizontal, Users, X } from 'lucide-react';
 import { sendEmailVerification } from 'firebase/auth';
 import { Alert, Field, Spinner } from '../components/ui';
 import { Brand } from '../components/Nav';
@@ -14,9 +14,11 @@ import { BookingDrawer } from './BookingDrawer';
 import { BookingForm, type FormInit } from './BookingForm';
 import { BookingsList } from './BookingsList';
 import { CalendarView } from './Calendar';
-import { AdminProvider, addDaysISO, useAdmin, type Me, type RequestItem } from './lib';
+import { AdminProvider, addDaysISO, useAdmin, type DashboardData, type Me, type RequestItem } from './lib';
+import { DashboardView, Notifications } from './Dashboard';
+import { GuestsView } from './Guests';
 import { RequestsView } from './Requests';
-import { AuditTab, RoomsTab } from './Settings';
+import { AuditTab, RoomsTab, SeasonalPrices, StayDetailsForm } from './Settings';
 import { todayInIndia } from '../../shared/validate.ts';
 
 export function Admin() {
@@ -85,7 +87,7 @@ function FirebaseGate() {
     const leave = () => api('/admin/logout', { method: 'POST', body: {} }).finally(() => setMe({ authenticated: false, isAdmin: false }));
     return (
       <AdminProvider me={me} getToken={getToken} onAuthLost={() => probe()} signOut={leave}>
-        <Dashboard />
+        <AdminShell />
       </AdminProvider>
     );
   }
@@ -118,7 +120,7 @@ function FirebaseGate() {
   }
   return (
     <AdminProvider me={me} getToken={getToken} onAuthLost={() => probe(true)} signOut={() => auth.signOut()}>
-      <Dashboard />
+      <AdminShell />
     </AdminProvider>
   );
 }
@@ -253,7 +255,7 @@ function PasswordGate() {
   if (me)
     return (
       <AdminProvider me={me} getToken={getToken} onAuthLost={() => setMe(null)} signOut={() => api('/admin/logout', { method: 'POST', body: {} }).finally(() => setMe(null))}>
-        <Dashboard />
+        <AdminShell />
       </AdminProvider>
     );
   return (
@@ -286,28 +288,50 @@ function PasswordGate() {
 
 // ---------- signed in ----------
 
-type Tab = 'calendar' | 'requests' | 'bookings' | 'more';
-const TABS: { id: Tab; label: string; icon: typeof CalendarDays }[] = [
+type Tab = 'dashboard' | 'bookings' | 'calendar' | 'requests' | 'guests' | 'settings';
+const NAV: { id: Tab; label: string; icon: typeof CalendarDays }[] = [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'bookings', label: 'Bookings', icon: ClipboardList },
   { id: 'calendar', label: 'Calendar', icon: CalendarDays },
   { id: 'requests', label: 'Requests', icon: Inbox },
-  { id: 'bookings', label: 'Bookings', icon: ClipboardList },
-  { id: 'more', label: 'More', icon: Menu },
+  { id: 'guests', label: 'Guests', icon: Users },
+  { id: 'settings', label: 'Property settings', icon: SlidersHorizontal },
 ];
+/** Phones: four tabs + More (guests, settings, log out). */
+const MOBILE: Tab[] = ['dashboard', 'calendar', 'requests', 'bookings'];
+// Old links (#more) still land somewhere sensible.
 const tabFromHash = (): Tab => {
   const h = location.hash.slice(1);
-  return TABS.some((t) => t.id === h) ? (h as Tab) : 'calendar';
+  if (h === 'more') return 'settings';
+  return NAV.some((t) => t.id === h) ? (h as Tab) : 'dashboard';
 };
 
-function Dashboard() {
+const SEEN_KEY = 'gs-admin-notifications-seen';
+const readSeen = () => {
+  try {
+    return localStorage.getItem(SEEN_KEY) ?? '';
+  } catch {
+    return '';
+  }
+};
+
+function AdminShell() {
   const { call, version, live, me, signOut } = useAdmin();
   const [tab, setTabState] = useState<Tab>(tabFromHash);
   const [openRef, setOpenRef] = useState<string | null>(null);
   const [form, setForm] = useState<FormInit | null>(null);
   const [requests, setRequests] = useState<RequestItem[] | null>(null);
   const [reqError, setReqError] = useState('');
+  const [dash, setDash] = useState<DashboardData | null>(null);
+  const [dashError, setDashError] = useState('');
+  const [bellOpen, setBellOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [seen, setSeen] = useState(readSeen);
+  const [confirmLogout, setConfirmLogout] = useState(false);
 
   const setTab = (t: Tab) => {
     setTabState(t);
+    setMoreOpen(false);
     history.replaceState(null, '', `#${t}`);
     window.scrollTo({ top: 0 });
   };
@@ -317,7 +341,7 @@ function Dashboard() {
     return () => window.removeEventListener('hashchange', on);
   }, []);
 
-  // Requests drive the badge, so they load here (and refresh on live updates).
+  // Requests (badge) and the dashboard (figures + notifications) refresh on every change.
   useEffect(() => {
     call<RequestItem[]>('/requests')
       .then((r) => {
@@ -326,49 +350,145 @@ function Dashboard() {
       })
       .catch((e) => setReqError((e as Error).message));
   }, [call, version.requests, version.bookings]);
+  useEffect(() => {
+    call<DashboardData>('/dashboard')
+      .then((d) => {
+        setDash(d);
+        setDashError('');
+      })
+      .catch((e) => setDashError((e as Error).message));
+  }, [call, version.requests, version.bookings]);
+
   const pending = requests?.filter((r) => r.status === 'pending').length ?? 0;
+  const notes = dash?.notifications ?? [];
+  const unread = notes.filter((n) => n.at > seen).length;
+  const openBell = () => {
+    setBellOpen((o) => !o);
+    const now = new Date().toISOString();
+    setSeen(now);
+    try {
+      localStorage.setItem(SEEN_KEY, now);
+    } catch {
+      /* private mode */
+    }
+  };
 
   const newBooking = (init?: Partial<FormInit>) => {
     const today = todayInIndia();
     setForm({ checkIn: today, checkOut: addDaysISO(today, 1), ...init });
   };
+  const go = (t: 'bookings' | 'requests' | 'calendar') => setTab(t);
+
+  const badge = (id: Tab) =>
+    id === 'requests' && pending > 0 ? (
+      <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#a3261b] px-1 text-[11.5px] font-bold text-white">
+        {pending}
+        <span className="sr-only"> pending</span>
+      </span>
+    ) : null;
 
   return (
-    <div className="min-h-dvh bg-white pb-[calc(76px+env(safe-area-inset-bottom))] text-[16px]">
-      <header className="sticky top-0 z-30 border-b border-hairline bg-white/95 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-[1100px] items-center gap-3 px-4">
-          <a href="/" aria-label="Golden Stay website" className="rounded-full">
+    <div className="min-h-dvh bg-[#fbfaf8] text-[16px] lg:pl-[248px]">
+      {/* Desktop sidebar */}
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[248px] flex-col border-r border-hairline bg-white lg:flex" aria-label="Admin">
+        <a href="/" aria-label="Golden Stay website" className="flex h-16 items-center px-5">
+          <Brand />
+        </a>
+        <nav aria-label="Admin sections" className="flex-1 px-3 py-2">
+          <ul className="space-y-1">
+            {NAV.map(({ id, label, icon: Icon }) => (
+              <li key={id}>
+                <button
+                  onClick={() => setTab(id)}
+                  aria-current={tab === id ? 'page' : undefined}
+                  className={`flex h-11 w-full items-center gap-3 rounded-[12px] px-3 text-[15px] font-semibold ${tab === id ? 'bg-card text-ink' : 'text-muted hover:bg-cream hover:text-ink'}`}
+                >
+                  <Icon size={19} aria-hidden="true" />
+                  <span className="flex-1 text-left">{label}</span>
+                  {badge(id)}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </nav>
+        <div className="border-t border-hairline p-4">
+          <p className="truncate text-[13px] text-muted" title={me.email ?? ''}>
+            {me.email ?? 'Admin (password)'}
+          </p>
+          <button onClick={() => setConfirmLogout(true)} className="mt-2 flex h-10 items-center gap-2 rounded-[10px] px-2 text-[14.5px] font-semibold text-muted hover:bg-cream hover:text-ink">
+            <LogOut size={17} aria-hidden="true" /> Log out
+          </button>
+        </div>
+      </aside>
+
+      <header className="sticky top-0 z-20 border-b border-hairline bg-white/95 backdrop-blur">
+        <div className="mx-auto flex h-16 max-w-[1240px] items-center gap-3 px-4 lg:px-6">
+          <a href="/" aria-label="Golden Stay website" className="rounded-full lg:hidden">
             <Brand />
           </a>
-          <span className="flex items-center gap-1.5 text-[13px] font-semibold text-muted" title={live ? 'Live updates on' : 'Reconnecting…'}>
+          <span className="flex items-center gap-1.5 text-[13px] font-semibold text-muted" title={live ? 'Up to date' : 'Reconnecting…'}>
             <span className={`size-2 rounded-full ${live ? 'bg-[#2f8a4c]' : 'bg-[#c9c2ba]'}`} aria-hidden="true" />
             <span className="sr-only md:not-sr-only">{live ? 'Live' : 'Offline'}</span>
           </span>
-          <button onClick={() => newBooking()} className="btn btn-dark ml-auto h-11 gap-1.5 px-4 text-[15px]">
+          <div className="relative ml-auto">
+            <button onClick={openBell} aria-expanded={bellOpen} aria-label={`Notifications${unread ? `, ${unread} new` : ''}`} className="relative grid size-11 place-items-center rounded-full border border-hairline bg-white hover:border-ink">
+              <Bell size={19} aria-hidden="true" />
+              {unread > 0 && <span className="absolute -right-0.5 -top-0.5 grid h-5 min-w-5 place-items-center rounded-full bg-[#a3261b] px-1 text-[11px] font-bold text-white">{unread}</span>}
+            </button>
+            {bellOpen && (
+              <div className="absolute right-0 top-[52px] z-40 w-[min(92vw,380px)] rounded-[18px] border border-hairline bg-white p-3 shadow-xl" role="dialog" aria-label="Notifications">
+                <div className="mb-1 flex items-center justify-between px-2">
+                  <p className="text-[15px] font-bold">Notifications</p>
+                  <button onClick={() => setBellOpen(false)} aria-label="Close notifications" className="grid size-9 place-items-center rounded-full hover:bg-card">
+                    <X size={16} aria-hidden="true" />
+                  </button>
+                </div>
+                <Notifications
+                  items={notes}
+                  limit={12}
+                  onOpenBooking={(ref) => {
+                    setBellOpen(false);
+                    setOpenRef(ref);
+                  }}
+                  onGo={(t) => {
+                    setBellOpen(false);
+                    go(t);
+                  }}
+                />
+              </div>
+            )}
+          </div>
+          <button onClick={() => newBooking()} className="btn btn-dark h-11 gap-1.5 px-4 text-[15px]">
             <Plus size={18} aria-hidden="true" /> New
           </button>
         </div>
       </header>
 
-      <main id="main" className="mx-auto max-w-[1100px] px-4 pt-5">
+      <main id="main" className="mx-auto max-w-[1240px] px-4 pb-[calc(92px+env(safe-area-inset-bottom))] pt-5 lg:px-6 lg:pb-12">
+        {tab === 'dashboard' && <DashboardView data={dash} error={dashError} onOpenBooking={setOpenRef} onGo={go} />}
         {tab === 'calendar' && <CalendarView onOpenBooking={setOpenRef} onNewBooking={(i) => newBooking(i)} />}
         {tab === 'requests' && <RequestsView items={requests} error={reqError} onOpenBooking={setOpenRef} />}
         {tab === 'bookings' && <BookingsList onOpen={setOpenRef} />}
-        {tab === 'more' && (
+        {tab === 'guests' && <GuestsView onOpenBooking={setOpenRef} />}
+        {tab === 'settings' && (
           <div className="space-y-8">
-            <section className="rounded-[18px] bg-card p-5">
-              <p className="text-[15px] text-muted">Signed in as</p>
-              <p className="break-all text-[17px] font-semibold">{me.email ?? 'Admin (password)'}</p>
-              <p className="mt-2 text-[14px] text-muted">
-                Online payment gateway: {me.gatewayEnabled ? `on (${me.phonepeEnv})` : 'off — guests pay by UPI QR'}
+            <div>
+              <h1 className="text-[24px] font-bold">Property settings</h1>
+              <p className="mt-1 text-[15px] text-muted">
+                Online payment gateway: {me.gatewayEnabled ? `on (${me.phonepeEnv})` : 'off — guests pay by UPI QR'}. Room photos, descriptions and amenities are part of the website’s code.
               </p>
-              <button onClick={signOut} className="btn btn-outline mt-4 h-12 w-full gap-2 text-[16px] md:w-auto md:px-6">
-                <LogOut size={18} aria-hidden="true" /> Log out
-              </button>
+            </div>
+            <section>
+              <h2 className="mb-3 text-[20px] font-bold">Rooms &amp; nightly prices</h2>
+              <RoomsTab />
             </section>
             <section>
-              <h2 className="mb-3 text-[20px] font-bold">Rooms &amp; prices</h2>
-              <RoomsTab />
+              <h2 className="mb-3 text-[20px] font-bold">Seasonal prices</h2>
+              <SeasonalPrices />
+            </section>
+            <section>
+              <h2 className="mb-3 text-[20px] font-bold">Stay details &amp; house rules</h2>
+              <StayDetailsForm />
             </section>
             <section>
               <h2 className="mb-3 text-[20px] font-bold">Audit log</h2>
@@ -378,30 +498,73 @@ function Dashboard() {
         )}
       </main>
 
-      <nav aria-label="Admin sections" className="fixed inset-x-0 bottom-0 z-30 border-t border-hairline bg-white pb-[env(safe-area-inset-bottom)]">
-        <ul className="mx-auto grid h-[68px] max-w-[640px] grid-cols-4">
-          {TABS.map(({ id, label, icon: Icon }) => (
-            <li key={id}>
-              <button
-                onClick={() => setTab(id)}
-                aria-current={tab === id ? 'page' : undefined}
-                className={`relative flex h-full w-full flex-col items-center justify-center gap-1 text-[13px] font-semibold ${tab === id ? 'text-ink' : 'text-muted'}`}
-              >
-                <span className="relative">
-                  <Icon size={24} strokeWidth={tab === id ? 2.4 : 1.9} aria-hidden="true" />
-                  {id === 'requests' && pending > 0 && (
-                    <span className="absolute -right-3 -top-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-[#a3261b] px-1 text-[11.5px] font-bold text-white">
-                      {pending}
-                      <span className="sr-only"> pending</span>
-                    </span>
-                  )}
-                </span>
-                {label}
-              </button>
-            </li>
-          ))}
+      {/* Phone / tablet bottom bar */}
+      <nav aria-label="Admin sections" className="fixed inset-x-0 bottom-0 z-30 border-t border-hairline bg-white pb-[env(safe-area-inset-bottom)] lg:hidden">
+        <ul className="mx-auto grid h-[68px] max-w-[640px] grid-cols-5">
+          {MOBILE.map((id) => {
+            const { label, icon: Icon } = NAV.find((n) => n.id === id)!;
+            return (
+              <li key={id}>
+                <button
+                  onClick={() => setTab(id)}
+                  aria-current={tab === id ? 'page' : undefined}
+                  className={`relative flex h-full w-full flex-col items-center justify-center gap-1 text-[12.5px] font-semibold ${tab === id ? 'text-ink' : 'text-muted'}`}
+                >
+                  <span className="relative">
+                    <Icon size={23} strokeWidth={tab === id ? 2.4 : 1.9} aria-hidden="true" />
+                    {id === 'requests' && pending > 0 && <span className="absolute -right-3 -top-1.5">{badge(id)}</span>}
+                  </span>
+                  {label === 'Property settings' ? 'Settings' : label}
+                </button>
+              </li>
+            );
+          })}
+          <li>
+            <button
+              onClick={() => setMoreOpen((o) => !o)}
+              aria-expanded={moreOpen}
+              aria-current={tab === 'guests' || tab === 'settings' ? 'page' : undefined}
+              className={`flex h-full w-full flex-col items-center justify-center gap-1 text-[12.5px] font-semibold ${tab === 'guests' || tab === 'settings' ? 'text-ink' : 'text-muted'}`}
+            >
+              <Menu size={23} aria-hidden="true" />
+              More
+            </button>
+          </li>
         </ul>
+        {moreOpen && (
+          <div className="absolute bottom-[calc(72px+env(safe-area-inset-bottom))] right-3 w-[240px] rounded-[18px] border border-hairline bg-white p-2 shadow-xl">
+            {(['guests', 'settings'] as Tab[]).map((id) => {
+              const { label, icon: Icon } = NAV.find((n) => n.id === id)!;
+              return (
+                <button key={id} onClick={() => setTab(id)} className="flex h-12 w-full items-center gap-3 rounded-[12px] px-3 text-[15.5px] font-semibold hover:bg-cream">
+                  <Icon size={19} aria-hidden="true" /> {label}
+                </button>
+              );
+            })}
+            <button onClick={() => setConfirmLogout(true)} className="flex h-12 w-full items-center gap-3 rounded-[12px] px-3 text-[15.5px] font-semibold text-muted hover:bg-cream">
+              <LogOut size={19} aria-hidden="true" /> Log out
+            </button>
+          </div>
+        )}
       </nav>
+
+      {confirmLogout && (
+        <div className="fixed inset-0 z-[60] grid place-items-center p-4" role="dialog" aria-modal="true" aria-label="Log out">
+          <div className="absolute inset-0 bg-ink/40" onClick={() => setConfirmLogout(false)} aria-hidden="true" />
+          <div className="relative w-full max-w-[380px] rounded-[22px] bg-white p-6 shadow-2xl">
+            <p className="text-[18px] font-bold">Log out of the admin?</p>
+            <p className="mt-1 text-[14.5px] text-muted">You’ll need your email and password to sign in again on this device.</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => setConfirmLogout(false)} className="btn btn-outline h-11 px-5 text-[15px]" autoFocus>
+                Stay signed in
+              </button>
+              <button onClick={signOut} className="btn btn-dark h-11 px-5 text-[15px]">
+                Log out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {openRef && <BookingDrawer refId={openRef} onClose={() => setOpenRef(null)} onEdit={(init) => { setOpenRef(null); setForm(init); }} />}
       {form && <BookingForm init={form} onClose={() => setForm(null)} onSaved={() => undefined} />}

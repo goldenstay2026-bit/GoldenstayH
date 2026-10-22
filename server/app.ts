@@ -21,6 +21,8 @@ import {
   type RequestOption,
 } from './calendar.ts';
 import { readChanges } from './changes.ts';
+import { dashboardData, guestDetail, listGuests } from './insights.ts';
+import { addSeasonalPrice, deleteSeasonalPrice, getPropertySettings, listSeasonalPrices, savePropertySettings } from './settings.ts';
 import { ensureSeeded } from './db.ts';
 import { inBackground } from './background.ts';
 import { isOptionId, optionById } from '../shared/catalog.ts';
@@ -35,6 +37,7 @@ import {
   getBookingForGuest,
   iso,
   listRooms,
+  paymentLabel,
   paymentsFor,
   quote,
   sweepExpiredHolds,
@@ -52,6 +55,10 @@ import { HttpError, errorHandler, rateLimit, route } from './http.ts';
 import {
   adminCancel,
   adminClearAttention,
+  adminComplete,
+  adminConfirm,
+  adminRecordPayment,
+  adminReject,
   adminRefund,
   adminRejectQr,
   adminVerifyQr,
@@ -158,6 +165,13 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
       holdMinutes: ctx.config.holdMinutes,
     };
     res.json(body);
+  });
+
+  /** Stay details and house rules set by the owner (public information shown on the policy pages). */
+  api.get('/property', async (_req, res) => {
+    const settings = await getPropertySettings(ctx);
+    edgeCache(res, 60);
+    res.json(settings);
   });
 
   api.get('/rooms', async (_req, res) => {
@@ -408,10 +422,10 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
         refunds.set(r.booking_id, [...(refunds.get(r.booking_id) ?? []), r]);
       }
     }
+    const refunded = (id: number) => (refunds.get(id) ?? []).filter((r) => r.state === 'completed').reduce((s, r) => s + r.amount_paise, 0);
     const paid = (id: number) =>
-      (pays.get(id) ?? []).filter((p) => p.state === 'completed' || p.state === 'verified').reduce((s, p) => s + p.amount_paise, 0) -
-      (refunds.get(id) ?? []).filter((r) => r.state === 'completed').reduce((s, r) => s + r.amount_paise, 0);
-    return { pays, paid };
+      (pays.get(id) ?? []).filter((p) => p.state === 'completed' || p.state === 'verified').reduce((s, p) => s + p.amount_paise, 0) - refunded(id);
+    return { pays, paid, refunded };
   }
 
   guarded.get('/bookings', async (req, res) => {
@@ -449,10 +463,12 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
     if (view === 'upcoming' || view === 'today') rows.sort(byDate);
     else if (view === 'past') rows.sort((a, b) => byDate(b, a));
     else rows.sort((a, b) => b.id - a.id);
-    rows = rows.slice(0, 500);
-    const money = await moneyFor(rows.filter((b) => b.source === 'website_online').map((b) => b.id));
+    rows = rows.slice(0, 1000);
+    const money = await moneyFor(rows.filter((b) => b.kind !== 'block').map((b) => b.id));
+    const payment = String(req.query.payment ?? '');
+    const listed = payment ? rows.filter((b) => paymentLabel(b, money.paid(b.id), money.refunded(b.id)) === payment) : rows;
     res.json(
-      rows.map((b) => ({
+      listed.slice(0, 500).map((b) => ({
         ref: b.ref,
         status: b.status,
         paymentStatus: b.payment_status,
@@ -472,6 +488,8 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
         notes: b.notes,
         totalPaise: b.total_paise,
         amountPaidPaise: money.paid(b.id),
+        payment: paymentLabel(b, money.paid(b.id), money.refunded(b.id)),
+        guestEmail: b.guest_email,
         method: money.pays.get(b.id)?.at(-1)?.method ?? null,
         createdAt: b.created_at,
       })),
@@ -507,8 +525,10 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
     const history = (
       await ctx.db.query<{ at: string; actor: string; action: string; details: string }>('audit_log', { where: [['booking_id', '==', b.id]], orderBy: [['at']] })
     ).map((h) => ({ at: h.at, actor: h.actor, action: h.action, details: h.details }));
+    const view = await toView(ctx, b);
     res.json({
-      ...(await toView(ctx, b)),
+      ...view,
+      payment: paymentLabel(b, view.amountPaidPaise, refunds.filter((x) => x.state === 'completed').reduce((s, x) => s + x.amountPaise, 0)),
       needsAttention: b.needs_attention,
       guestPhone: b.guest_phone ? displayPhone(b.guest_phone) : '',
       whatsapp: b.guest_phone ? whatsappNumber(b.guest_phone) : '',
@@ -536,6 +556,22 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
   guarded.post('/bookings/:ref/cancel', async (req, res) => {
     await adminCancel(ctx, await byRef(req.params.ref), req.body?.note, actor(req));
     res.json({ ok: true });
+  });
+  guarded.post('/bookings/:ref/confirm', async (req, res) => {
+    await adminConfirm(ctx, await byRef(req.params.ref), req.body?.note, actor(req));
+    res.json({ ok: true });
+  });
+  guarded.post('/bookings/:ref/reject', async (req, res) => {
+    await adminReject(ctx, await byRef(req.params.ref), req.body?.note, actor(req));
+    res.json({ ok: true });
+  });
+  guarded.post('/bookings/:ref/complete', async (req, res) => {
+    await adminComplete(ctx, await byRef(req.params.ref), req.body?.note, actor(req));
+    res.json({ ok: true });
+  });
+  guarded.post('/bookings/:ref/payments', async (req, res) => {
+    const id = await adminRecordPayment(ctx, await byRef(req.params.ref), req.body ?? {}, actor(req));
+    res.status(201).json({ ok: true, paymentId: id });
   });
   guarded.post('/bookings/:ref/clear-attention', async (req, res) => {
     await adminClearAttention(ctx, await byRef(req.params.ref), req.body?.note, actor(req));
@@ -615,6 +651,25 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
     await ctx.db.update('rooms', room.id, { price_paise: pricePaise, bookable, updated_at: iso(ctx) });
     await audit(ctx, actor(req), 'room.updated', null, { room: room.id, from: room.price_paise, to: pricePaise, bookable: bookable === 1, note });
     res.json(await listRooms(ctx));
+  });
+
+  guarded.get('/dashboard', async (_req, res) => res.json(await dashboardData(ctx)));
+
+  guarded.get('/guests', async (req, res) => res.json(await listGuests(ctx, String(req.query.q ?? ''))));
+  guarded.get('/guests/:key', async (req, res) => {
+    const g = await guestDetail(ctx, String(req.params.key));
+    if (!g) throw new HttpError(404, 'Guest not found.', 'NOT_FOUND');
+    res.json(g);
+  });
+
+  guarded.get('/property', async (_req, res) => res.json(await getPropertySettings(ctx)));
+  guarded.put('/property', async (req, res) => res.json(await savePropertySettings(ctx, req.body ?? {}, actor(req))));
+
+  guarded.get('/seasonal-prices', async (_req, res) => res.json(await listSeasonalPrices(ctx)));
+  guarded.post('/seasonal-prices', async (req, res) => res.status(201).json(await addSeasonalPrice(ctx, req.body ?? {}, actor(req))));
+  guarded.delete('/seasonal-prices/:id', async (req, res) => {
+    await deleteSeasonalPrice(ctx, String(req.params.id), actor(req));
+    res.json({ ok: true });
   });
 
   guarded.get('/audit', async (req, res) => {

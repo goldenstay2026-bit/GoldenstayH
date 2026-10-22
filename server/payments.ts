@@ -20,6 +20,8 @@ import {
 import { inBackground } from './background.ts';
 import { notifyBookingConfirmed } from './notify/confirmation.ts';
 import { notifyOwnerToVerify } from './notify/ownerVerify.ts';
+import { notifyGuest } from './notify/guestEmail.ts';
+import { todayInIndia } from '../shared/validate.ts';
 import { HttpError } from './http.ts';
 import { PhonePeError, type OrderStatus } from './phonepe.ts';
 
@@ -33,7 +35,7 @@ async function setPayment(ctx: Ctx, id: number, fields: Partial<Omit<PaymentRow,
   if (p) queueBookingSync(ctx, p.booking_id);
 }
 
-function newPaymentRow(b: BookingRow, method: 'gateway' | 'qr', state: string, now: string, extra: Partial<PaymentRow> = {}): Omit<PaymentRow, 'id'> {
+function newPaymentRow(b: BookingRow, method: 'gateway' | 'qr' | 'manual', state: string, now: string, extra: Partial<PaymentRow> = {}): Omit<PaymentRow, 'id'> {
   return {
     booking_id: b.id,
     method,
@@ -79,8 +81,9 @@ async function confirmBooking(ctx: Ctx, bookingId: number, actor: string, detail
       confirmed_at: iso(ctx),
     });
     await audit(ctx, actor, 'booking.confirmed', b.id, details);
-    // Email the owner once the confirmation is committed (never for a rolled-back change).
+    // Email the owner (and the guest) once the confirmation is committed (never for a rolled-back change).
     ctx.db.onCommit(() => inBackground('confirmation email', () => notifyBookingConfirmed(ctx, b.id)));
+    ctx.db.onCommit(() => inBackground('guest confirmation email', () => notifyGuest(ctx, b.id, 'confirmed')));
     return true;
   });
 }
@@ -355,8 +358,9 @@ export async function adminRefund(ctx: Ctx, booking: BookingRow, paymentId: unkn
   const merchantRefundId = `RF-${booking.ref}-${crypto.randomBytes(4).toString('hex')}`;
   const now = iso(ctx);
 
-  if (p.method === 'qr') {
-    // QR payments can't be refunded through an API — the owner refunds in the PhonePe Business app and records it here.
+  if (p.method === 'qr' || p.method === 'manual') {
+    // QR and owner-recorded payments can't be refunded through an API — the owner refunds
+    // (PhonePe Business app, cash, bank) and records it here.
     await ctx.db.tx(async () => {
       await ctx.db.insert('refunds', newRefundRow(p, { method: 'manual', merchant_refund_id: merchantRefundId, amount_paise: amountPaise, state: 'completed', note: n }, now));
       await audit(ctx, actor, 'refund.recorded_manual', booking.id, { paymentId: p.id, amountPaise, note: n });
@@ -388,5 +392,93 @@ export async function refreshRefund(ctx: Ctx, merchantRefundId: string, source: 
     await ctx.db.update('refunds', r.id, { state, updated_at: iso(ctx) });
     await audit(ctx, source, `refund.${state}`, r.booking_id, { merchantRefundId });
     if (state === 'completed') await updateRefundedStatus(ctx, r.booking_id);
+  });
+}
+
+// ---------- booking status actions from the admin (each needs a note, all audit-logged) ----------
+
+const PENDING = new Set(['pending_payment', 'pending_verification']);
+
+/**
+ * Owner confirms a pending online booking (e.g. paid in person, or a payment
+ * they've already checked). The dates are re-checked on the server: if the
+ * hold had lapsed and someone else took the nights meanwhile, it is refused.
+ */
+export async function adminConfirm(ctx: Ctx, booking: BookingRow, note: unknown, actor: string) {
+  const n = requireNote(note);
+  return ctx.db.tx(async () => {
+    const b = (await getBookingById(ctx, booking.id))!;
+    if (!PENDING.has(b.status) && b.status !== 'expired') throw new HttpError(409, `This booking is ${b.status.replace('_', ' ')} — only pending bookings can be confirmed.`, 'BAD_STATE');
+    if (!(await tryReacquireNights(ctx, b))) {
+      throw new HttpError(409, 'Those nights are no longer free — someone else booked them. Offer the guest other dates.', 'DATES_TAKEN');
+    }
+    await setBooking(ctx, b.id, { status: 'confirmed', hold_expires_at: null, confirmed_at: iso(ctx), needs_attention: null });
+    await audit(ctx, actor, 'booking.confirmed_by_owner', b.id, { previousStatus: b.status, note: n });
+    ctx.db.onCommit(() => inBackground('confirmation email', () => notifyBookingConfirmed(ctx, b.id)));
+    ctx.db.onCommit(() => inBackground('guest confirmation email', () => notifyGuest(ctx, b.id, 'confirmed')));
+  });
+}
+
+/** Owner declines a pending booking: its nights are released; a submitted UPI claim is marked rejected. */
+export async function adminReject(ctx: Ctx, booking: BookingRow, note: unknown, actor: string) {
+  const n = requireNote(note);
+  return ctx.db.tx(async () => {
+    const b = (await getBookingById(ctx, booking.id))!;
+    if (!PENDING.has(b.status) && b.status !== 'expired') throw new HttpError(409, 'Only pending bookings can be rejected. Cancel a confirmed booking instead.', 'BAD_STATE');
+    for (const p of await paymentsFor(ctx, b.id)) if (p.method === 'qr' && p.state === 'submitted') await setPayment(ctx, p.id, { state: 'rejected' });
+    await releaseNights(ctx, b.id);
+    const paid = await amountPaid(ctx, b.id);
+    await setBooking(ctx, b.id, {
+      status: 'rejected',
+      payment_status: paid > 0 ? 'successful' : b.payment_status === 'pending_verification' ? 'failed' : b.payment_status,
+      hold_expires_at: null,
+      needs_attention: paid > 0 ? 'Rejected after payment — refund due.' : null,
+    });
+    await audit(ctx, actor, 'booking.rejected', b.id, { previousStatus: b.status, amountPaidPaise: paid, note: n });
+    ctx.db.onCommit(() => inBackground('guest rejection email', () => notifyGuest(ctx, b.id, 'rejected')));
+  });
+}
+
+/** Marks a confirmed stay completed — from the check-out day on. */
+export async function adminComplete(ctx: Ctx, booking: BookingRow, note: unknown, actor: string) {
+  const n = requireNote(note);
+  return ctx.db.tx(async () => {
+    const b = (await getBookingById(ctx, booking.id))!;
+    if (b.kind === 'block') throw new HttpError(409, 'Blocked dates can’t be completed — remove the block instead.', 'BAD_STATE');
+    if (b.status !== 'confirmed') throw new HttpError(409, 'Only confirmed bookings can be marked completed.', 'BAD_STATE');
+    if (b.check_out > todayInIndia(ctx.now())) throw new HttpError(409, `The stay ends on ${b.check_out} — mark it completed on or after check-out.`, 'TOO_EARLY');
+    await setBooking(ctx, b.id, { status: 'completed' });
+    await audit(ctx, actor, 'booking.completed', b.id, { note: n });
+  });
+}
+
+const MANUAL_METHODS = ['cash', 'upi', 'bank', 'other'] as const;
+
+/** Records a payment received outside the website (cash, UPI, bank transfer) — counts towards Paid / Partially paid. */
+export async function adminRecordPayment(ctx: Ctx, booking: BookingRow, input: Record<string, unknown>, actor: string) {
+  const n = requireNote(input.note);
+  const method = (MANUAL_METHODS as readonly string[]).includes(String(input.method)) ? String(input.method) : 'other';
+  const amountPaise = Math.round(Number(input.amount) * 100);
+  if (!Number.isInteger(amountPaise) || amountPaise < 100 || amountPaise > 10_000_000) {
+    throw new HttpError(400, 'Enter an amount between ₹1 and ₹1,00,000.', 'INVALID_AMOUNT', 'amount');
+  }
+  const reference = String(input.reference ?? '').trim().slice(0, 40) || null;
+  return ctx.db.tx(async () => {
+    const b = (await getBookingById(ctx, booking.id))!;
+    if (b.kind === 'block') throw new HttpError(409, 'Blocked dates have no payments.', 'BAD_STATE');
+    if (b.status === 'cancelled' || b.status === 'rejected' || b.status === 'expired') throw new HttpError(409, 'This booking is not active — record a refund instead if needed.', 'BAD_STATE');
+    const now = iso(ctx);
+    const id = Number(
+      await ctx.db.insert('payments', {
+        ...newPaymentRow(b, 'manual', 'verified', now, { utr: reference }),
+        amount_paise: amountPaise,
+        gateway_payment_mode: method,
+      }),
+    );
+    const paid = await amountPaid(ctx, b.id);
+    if (b.total_paise > 0 && paid >= b.total_paise) await setBooking(ctx, b.id, { payment_status: 'successful' });
+    else queueBookingSync(ctx, b.id);
+    await audit(ctx, actor, 'payment.recorded', b.id, { paymentId: id, method, amountPaise, reference, note: n });
+    return id;
   });
 }

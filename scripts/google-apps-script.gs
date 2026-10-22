@@ -6,6 +6,8 @@
  *   • action "booking_upsert"     → adds/updates the booking's row in the "Bookings" sheet
  *                                   (one row per booking, kept up to date as its status changes)
  *   • action "booking_confirmed"  → emails OWNER_EMAIL that a booking is confirmed
+ *   • action "guest_email"        → emails a GUEST about their online booking (confirmed / not accepted),
+ *                                   from your Gmail, with replies going to OWNER_EMAIL
  *
  * Setup (step by step in NOTIFICATIONS_SETUP.md):
  *   1. In the Google Sheet: Extensions → Apps Script, paste this whole file, Save.
@@ -17,8 +19,9 @@
  *      Copy the Web app URL (ends in /exec) into SHEETS_WEBHOOK_URL in the server's .env.
  *      (Already deployed before? Deploy → Manage deployments → edit → Version: New version.)
  *
- * Emails are sent from the Google account that owns this script, and ONLY to
- * OWNER_EMAIL — the website can't make it email anyone else.
+ * Emails are sent from the Google account that owns this script: owner emails go
+ * only to OWNER_EMAIL; guest emails only to the email address on a booking, and
+ * only when the request carries SHEETS_SECRET (i.e. from the website's server).
  */
 
 var OWNER_EMAIL = 'goldenstay2026@gmail.com';
@@ -44,6 +47,7 @@ function doPost(e) {
     if (action === 'enquiry') return json_(logEnquiry_(body));
     if (action === 'booking_upsert') return json_(upsertBooking_(body.booking || {}));
     if (action === 'booking_confirmed') return json_(bookingConfirmed_(body));
+    if (action === 'guest_email') return json_(guestEmail_(body));
     return json_({ ok: false, error: 'unknown action' });
   } catch (err) {
     return json_({ ok: false, error: String((err && err.message) || err) });
@@ -131,6 +135,21 @@ function bookingConfirmed_(b) {
     body: String(b.text || '').slice(0, 20000),
     htmlBody: String(b.html || '').slice(0, 50000),
     name: 'Golden Stay website',
+  });
+  return { ok: true };
+}
+
+function guestEmail_(b) {
+  var to = String(b.to || '').trim();
+  if (!/^[^\s@<>,;]+@[^\s@<>,;]+\.[a-z]{2,}$/i.test(to)) return { ok: false, error: 'invalid recipient' };
+  // The server builds the message (all guest input already HTML-escaped).
+  MailApp.sendEmail({
+    to: to,
+    replyTo: OWNER_EMAIL,
+    subject: String(b.subject || 'Your Golden Stay booking').slice(0, 250),
+    body: String(b.text || '').slice(0, 20000),
+    htmlBody: String(b.html || '').slice(0, 50000),
+    name: 'Golden Stay',
   });
   return { ok: true };
 }

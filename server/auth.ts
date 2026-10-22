@@ -98,7 +98,8 @@ export function requireAdmin(ctx: Ctx) {
     adminIdentity(ctx, req).then(
       (who) => {
         if (!who) return next(new HttpError(401, 'Please sign in again.', 'UNAUTHENTICATED'));
-        if (req.method !== 'GET' && !req.is('application/json')) return next(new HttpError(415, 'JSON required.', 'BAD_CONTENT_TYPE'));
+        // Changes must be JSON (a plain HTML form can't send JSON) — DELETE carries no body.
+        if (req.method !== 'GET' && req.method !== 'DELETE' && !req.is('application/json')) return next(new HttpError(415, 'JSON required.', 'BAD_CONTENT_TYPE'));
         (req as Request & { admin?: AdminIdentity }).admin = who;
         next();
       },

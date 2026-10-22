@@ -14,7 +14,8 @@ import {
   Wrench,
   type LucideIcon,
 } from 'lucide-react';
-import { POLICY_DOCS, type RuleIcon } from '../data/policies';
+import type { RuleIcon } from '../data/policies';
+import { usePolicyDocs } from '../lib/usePolicyDocs';
 import { policies } from '../data/site';
 import { formatISODate } from '../../shared/validate.ts';
 import type { PolicyId } from '../lib/router';
@@ -36,7 +37,7 @@ const RULE_ICONS: Record<RuleIcon, LucideIcon> = {
 
 /** One policy page (Terms, Privacy, Cancellation, House Rules) — readable, printable prose. */
 export function PolicyPage({ id }: { id: PolicyId }) {
-  const doc = POLICY_DOCS[id];
+  const doc = usePolicyDocs()[id];
   const anchor = (clause: string) => `${id}--${clause}`;
   return (
     <div className="policy-page container-x pt-6 md:pt-10">

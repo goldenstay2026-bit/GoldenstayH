@@ -235,6 +235,13 @@ export function CalendarView({
   );
 }
 
+/** Guest name (or block reason) shown inside the bar on wide screens. */
+function whoOn(info: DayInfo, unit: Unit): string {
+  const b = info.bookings.find((x) => x.units.includes(unit));
+  if (b) return b.guestName;
+  return info.requests.find((r) => r.units.includes(unit))?.guestName ?? '';
+}
+
 function marker(info: DayInfo, unit: Unit): 'booked' | 'block' | 'pending' | 'request' | null {
   const b = info.bookings.find((x) => x.units.includes(unit));
   if (b) return b.state;
@@ -270,8 +277,8 @@ function DayCell({
   onPressStart: () => void;
   onPressEnd: () => void;
 }) {
-  const marks = units.map((u) => [u, marker(info, u)] as const);
-  const label = `${formatISODate(date)}${isToday ? ' (today)' : ''}: ${marks.map(([u, m]) => `${UNIT_LABEL[u]} ${m ? MARKER_TEXT[m] : 'free'}`).join(', ')}`;
+  const marks = units.map((u) => [u, marker(info, u), whoOn(info, u)] as const);
+  const label = `${formatISODate(date)}${isToday ? ' (today)' : ''}: ${marks.map(([u, m, who]) => `${UNIT_LABEL[u]} ${m ? MARKER_TEXT[m] : 'free'}${who && m !== 'block' ? ` (${who})` : ''}`).join(', ')}`;
   return (
     <button
       role="gridcell"
@@ -290,9 +297,12 @@ function DayCell({
     >
       <span className={`text-[15px] font-semibold leading-none md:text-[16px] ${isToday ? 'text-ink' : ''}`}>{+date.slice(8)}</span>
       <span className="mt-auto flex flex-col gap-1">
-        {marks.map(([u, m]) => (
+        {marks.map(([u, m, who]) => (
           <span key={u} className={`flex h-[14px] items-center overflow-hidden rounded-[4px] md:h-[18px] ${m ? MARKER_CLS[m] : ''}`} aria-hidden="true">
-            {units.length > 1 && <span className={`hidden px-1 text-[10.5px] md:inline font-bold leading-none ${m === 'booked' ? 'text-white' : m === 'block' ? 'text-white' : 'text-muted'}`}>{UNIT_LABEL[u]}</span>}
+            <span className={`hidden truncate whitespace-nowrap px-1 text-[10.5px] font-bold leading-none md:inline ${m === 'booked' || m === 'block' ? 'text-white' : 'text-muted'}`}>
+              {units.length > 1 ? UNIT_LABEL[u] : ''}
+              {who ? <span className="hidden font-semibold lg:inline">{units.length > 1 ? ' · ' : ''}{who}</span> : null}
+            </span>
           </span>
         ))}
       </span>

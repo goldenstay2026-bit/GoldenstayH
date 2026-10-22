@@ -21,6 +21,7 @@ import type { FirebaseServices } from './firebase.ts';
 import { bookingSheetRow, syncBookingToSheet } from './notify/bookingSheet.ts';
 import { sheetsConfigured } from './notify/sheets.ts';
 import { HttpError } from './http.ts';
+import { seasonalPricesFor } from './settings.ts';
 import type { PhonePeClient } from './phonepe.ts';
 
 export type Ctx = {
@@ -74,7 +75,8 @@ export type BookingRow = {
 export type PaymentRow = {
   id: number;
   booking_id: number;
-  method: 'gateway' | 'qr';
+  /** manual = recorded by the owner (cash, UPI, bank transfer) */
+  method: 'gateway' | 'qr' | 'manual';
   state: string;
   amount_paise: number;
   merchant_order_id: string | null;
@@ -131,16 +133,49 @@ export const roomUnits = (room: RoomRow) => JSON.parse(room.units) as Unit[];
 /**
  * Price breakdown. Policy (owner-approved): published nightly prices are
  * final — no taxes or fees are added, and the full amount is paid online.
- * Add tax/fee lines here if that ever changes; the total is always
- * recomputed on the server.
+ * Each night uses the room's price, or a seasonal price set in the admin for
+ * that night (the most recently added rule wins where rules overlap). The
+ * total is always computed on the server.
  */
-function priceLines(room: RoomRow, nights: number): { lines: PriceLine[]; total: number; payNow: number } {
-  const roomCharges = room.price_paise * nights;
-  const lines: PriceLine[] = [
-    { label: `${room.name} · ${formatPaise(room.price_paise)} × ${nights} ${nights === 1 ? 'night' : 'nights'}`, amountPaise: roomCharges },
-  ];
+async function priceLines(ctx: Ctx, room: RoomRow, checkIn: string, checkOut: string): Promise<{ lines: PriceLine[]; total: number; payNow: number; firstNight: number }> {
+  const seasonal = await seasonalPricesFor(ctx, room.id);
+  const priceFor = (night: string) => {
+    let price = room.price_paise;
+    let label = '';
+    for (const sp of seasonal) if (night >= sp.from && night <= sp.to) ((price = sp.price_paise), (label = sp.label));
+    return { price, label };
+  };
+  const groups = new Map<string, { price: number; label: string; nights: number }>();
+  const nights = stayNights(checkIn, checkOut);
+  for (const n of nights) {
+    const { price, label } = priceFor(n);
+    const key = `${price}|${label}`;
+    const g = groups.get(key) ?? { price, label, nights: 0 };
+    g.nights++;
+    groups.set(key, g);
+  }
+  const lines: PriceLine[] = [...groups.values()].map((g) => ({
+    label: `${room.name} · ${g.label ? `${g.label} ` : ''}${formatPaise(g.price)} × ${g.nights} ${g.nights === 1 ? 'night' : 'nights'}`,
+    amountPaise: g.price * g.nights,
+  }));
   const total = lines.reduce((s, l) => s + l.amountPaise, 0);
-  return { lines, total, payNow: total };
+  return { lines, total, payNow: total, firstNight: nights.length ? priceFor(nights[0]).price : room.price_paise };
+}
+
+// ---------- payment summary (what the admin shows) ----------
+
+export type PaymentLabel = 'paid' | 'partially_paid' | 'pending' | 'to_verify' | 'refunded' | 'failed' | 'not_recorded' | 'none';
+
+/** Pending / Paid / Partially paid / Refunded …, from what was actually received (net of refunds). */
+export function paymentLabel(b: BookingRow, paidPaise: number, refundedPaise = 0): PaymentLabel {
+  if (b.kind === 'block') return 'none';
+  if (b.payment_status === 'refunded' || (refundedPaise > 0 && paidPaise <= 0)) return 'refunded';
+  if (b.payment_status === 'pending_verification') return 'to_verify';
+  if (b.total_paise > 0 && paidPaise >= b.total_paise) return 'paid';
+  if (paidPaise > 0) return 'partially_paid';
+  if (b.payment_status === 'failed') return 'failed';
+  if (b.source !== 'website_online' && b.total_paise === 0) return 'not_recorded';
+  return 'pending';
 }
 
 // ---------- room-nights ----------
@@ -179,7 +214,7 @@ async function parseStay(ctx: Ctx, input: StayInput) {
 export async function quote(ctx: Ctx, input: StayInput): Promise<Quote> {
   await sweepExpiredHolds(ctx);
   const s = await parseStay(ctx, input);
-  const p = priceLines(s.room, s.nights);
+  const p = await priceLines(ctx, s.room, s.checkIn, s.checkOut);
   return {
     roomId: s.room.id as RoomId,
     roomName: s.room.name,
@@ -187,7 +222,7 @@ export async function quote(ctx: Ctx, input: StayInput): Promise<Quote> {
     checkOut: s.checkOut,
     nights: s.nights,
     guests: s.guests,
-    nightlyPaise: s.room.price_paise,
+    nightlyPaise: p.firstNight,
     lines: p.lines,
     totalPaise: p.total,
     payNowPaise: p.payNow,
@@ -263,7 +298,7 @@ export async function createBooking(ctx: Ctx, input: CreateBookingInput, userUid
   const message = String(input.message ?? '').trim().slice(0, 500);
 
   // Amount comes ONLY from the database price — anything the client sends is ignored.
-  const p = priceLines(s.room, s.nights);
+  const p = await priceLines(ctx, s.room, s.checkIn, s.checkOut);
   const token = crypto.randomBytes(24).toString('base64url');
   const now = iso(ctx);
   const holdExpires = new Date(ctx.now().getTime() + ctx.config.holdMinutes * 60_000).toISOString();
@@ -282,7 +317,7 @@ export async function createBooking(ctx: Ctx, input: CreateBookingInput, userUid
       check_out: s.checkOut,
       nights: s.nights,
       guests: s.guests,
-      nightly_paise: s.room.price_paise,
+      nightly_paise: p.firstNight,
       lines_json: JSON.stringify(p.lines),
       total_paise: p.total,
       pay_now_paise: p.payNow,

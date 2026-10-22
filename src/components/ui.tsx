@@ -105,6 +105,8 @@ export const STATUS_LABEL = {
     confirmed: ['Confirmed', 'success'],
     cancelled: ['Cancelled', 'danger'],
     expired: ['Expired', 'neutral'],
+    rejected: ['Rejected', 'danger'],
+    completed: ['Completed', 'info'],
   },
   payment: {
     pending: ['Pending', 'neutral'],

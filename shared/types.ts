@@ -2,12 +2,14 @@
 
 import type { OptionId, RoomId } from './catalog.ts';
 
-export type BookingStatus = 'pending_payment' | 'pending_verification' | 'confirmed' | 'cancelled' | 'expired';
+/** rejected = the owner declined a pending booking; completed = the stay is over. */
+export type BookingStatus = 'pending_payment' | 'pending_verification' | 'confirmed' | 'cancelled' | 'expired' | 'rejected' | 'completed';
 
 /** Payment statuses as shown to guests and in the admin. */
 export type PaymentStatus = 'pending' | 'pending_verification' | 'successful' | 'failed' | 'refunded';
 
-export type PaymentMethod = 'gateway' | 'qr';
+/** manual = a payment the owner recorded (cash, UPI, bank transfer) for an owner-entered booking. */
+export type PaymentMethod = 'gateway' | 'qr' | 'manual';
 
 export type PriceLine = { label: string; amountPaise: number };
 
@@ -63,3 +65,20 @@ export type BookingView = {
 };
 
 export type ApiError = { error: string; code?: string; field?: string };
+
+/** Stay details and house rules the owner edits in Admin → Settings (null/'' = not shown). */
+export type PropertySettings = {
+  checkInTime: string | null;
+  checkOutTime: string | null;
+  advanceRequired: string | null;
+  freeCancellationHours: number | null;
+  lateCancellationCharge: string | null;
+  refundDays: number | null;
+  smoking: string | null;
+  alcohol: string | null;
+  pets: string | null;
+  visitors: string | null;
+  quietHours: string | null;
+  securityDeposit: string | null;
+  eventDeposit: string | null;
+};

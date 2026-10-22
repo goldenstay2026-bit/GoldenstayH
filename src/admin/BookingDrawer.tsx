@@ -6,9 +6,10 @@ import { MessageCircle, Pencil, Phone, RefreshCw, X } from 'lucide-react';
 import { formatPaise, type OptionId } from '../../shared/catalog.ts';
 import type { BookingStatus, PaymentStatus } from '../../shared/types.ts';
 import { formatISODate } from '../../shared/validate.ts';
-import { Alert, BookingChip, Chip, Field, PaymentChip, Spinner } from '../components/ui';
+import { Alert, BookingChip, Chip, Field, Spinner } from '../components/ui';
 import { useModal } from '../lib/useModal';
-import { SOURCE_LABEL, confirmationMessage, nightsLabel, useAdmin, waUrl, when } from './lib';
+import { PAYMENT_LABEL, SOURCE_LABEL, confirmationMessage, nightsLabel, useAdmin, waUrl, when, type PaymentLabel } from './lib';
+import { todayInIndia } from '../../shared/validate.ts';
 import type { FormInit } from './BookingForm';
 
 export type Row = {
@@ -33,13 +34,16 @@ export type Row = {
   notes: string;
   totalPaise: number;
   amountPaidPaise: number;
-  method: 'gateway' | 'qr' | null;
+  /** Paid / Partially paid / Pending / Refunded … (worked out on the server) */
+  payment: PaymentLabel;
+  guestEmail: string;
+  method: 'gateway' | 'qr' | 'manual' | null;
   createdAt: string;
 };
 
 type Payment = {
   id: number;
-  method: 'gateway' | 'qr';
+  method: 'gateway' | 'qr' | 'manual';
   state: string;
   amountPaise: number;
   merchantOrderId: string | null;
@@ -78,7 +82,11 @@ type Action =
   | { kind: 'verify' | 'reject'; payment: Payment }
   | { kind: 'refund'; payment: Payment; max: number }
   | { kind: 'cancel' }
-  | { kind: 'clear' };
+  | { kind: 'clear' }
+  | { kind: 'confirmBooking' }
+  | { kind: 'rejectBooking' }
+  | { kind: 'complete' }
+  | { kind: 'record'; balance: number };
 
 const ACTION_COPY: Record<Action['kind'], { title: string; button: string; danger?: boolean; help: string }> = {
   verify: { title: 'Verify QR payment', button: 'Mark verified & confirm booking', help: 'Only verify after you find this UTR and the exact amount in your PhonePe Business app / bank statement.' },
@@ -86,6 +94,10 @@ const ACTION_COPY: Record<Action['kind'], { title: string; button: string; dange
   refund: { title: 'Refund payment', button: 'Refund', danger: true, help: 'Gateway payments are refunded through PhonePe. For QR payments, refund in your PhonePe Business app first, then record it here.' },
   cancel: { title: 'Cancel booking', button: 'Cancel booking', danger: true, help: 'Releases the room for these dates so they can be booked again. Paid online bookings will be flagged for refund.' },
   clear: { title: 'Mark issue resolved', button: 'Mark resolved', help: 'Clears the “needs attention” flag. Describe what you did.' },
+  confirmBooking: { title: 'Confirm booking', button: 'Confirm booking', help: 'Confirms the stay and keeps the dates booked. The dates are checked again first. A guest who booked online is emailed.' },
+  rejectBooking: { title: 'Reject booking', button: 'Reject booking', danger: true, help: 'Declines this pending booking and releases its dates. A guest who booked online is emailed; if they already paid, it is flagged for a refund.' },
+  complete: { title: 'Mark as completed', button: 'Mark completed', help: 'The guest has checked out. The booking moves to Completed.' },
+  record: { title: 'Record a payment', button: 'Record payment', help: 'For money received outside the website — cash, UPI to your number, or a bank transfer.' },
 };
 
 export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClose: () => void; onEdit: (init: FormInit) => void }) {
@@ -105,6 +117,10 @@ export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClo
   useEffect(load, [load, version.bookings]);
   const online = d?.source === 'website_online';
   const block = d?.kind === 'block';
+  const pending = d ? ['pending_payment', 'pending_verification', 'expired'].includes(d.status) && !block : false;
+  const active = d ? !['cancelled', 'rejected', 'expired'].includes(d.status) : false;
+  const canComplete = d ? d.status === 'confirmed' && !block && d.checkOut <= todayInIndia() : false;
+  const canRecord = d ? !block && ['confirmed', 'completed', 'pending_payment', 'pending_verification'].includes(d.status) : false;
 
   const refresh = async () => {
     setBusy(true);
@@ -150,11 +166,36 @@ export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClo
             <div className="space-y-6">
               <div className="flex flex-wrap gap-1.5">
                 {block ? <Chip tone={d.status === 'cancelled' ? 'danger' : 'neutral'}>{d.status === 'cancelled' ? 'Removed' : 'Blocked'}</Chip> : <BookingChip status={d.status} />}
-                {online && <PaymentChip status={d.paymentStatus} />}
+                {!block && <Chip tone={PAYMENT_LABEL[d.payment][1]}>{PAYMENT_LABEL[d.payment][0]}</Chip>}
                 <Chip>{SOURCE_LABEL[d.source] ?? d.source}</Chip>
               </div>
 
-              {d.status !== 'cancelled' && (
+              {!block && (pending || canComplete || canRecord) && (
+                <div className="flex flex-wrap gap-2">
+                  {pending && (
+                    <>
+                      <button className="btn btn-dark h-12 px-5 text-[16px]" onClick={() => setAction({ kind: 'confirmBooking' })}>
+                        Confirm booking
+                      </button>
+                      <button className="btn btn-outline h-12 px-5 text-[16px] text-[#a3261b] !border-[#e3b4ae]" onClick={() => setAction({ kind: 'rejectBooking' })}>
+                        Reject…
+                      </button>
+                    </>
+                  )}
+                  {canComplete && (
+                    <button className="btn btn-outline h-12 px-5 text-[16px]" onClick={() => setAction({ kind: 'complete' })}>
+                      Mark completed
+                    </button>
+                  )}
+                  {canRecord && (
+                    <button className="btn btn-outline h-12 px-5 text-[16px]" onClick={() => setAction({ kind: 'record', balance: Math.max(0, d.totalPaise - d.amountPaidPaise) })}>
+                      Record payment
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {active && (
                 <div className="flex flex-wrap gap-2">
                   {!online && (
                     <button
@@ -172,6 +213,7 @@ export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClo
                           occasion: d.occasion,
                           source: d.source,
                           notes: d.notes,
+                          totalPrice: d.totalPaise ? d.totalPaise / 100 : undefined,
                         })
                       }
                     >
@@ -223,7 +265,7 @@ export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClo
                 {d.holdExpiresAt && <KV k="Hold until" v={when(d.holdExpiresAt)} />}
               </Section>
 
-              {online && (
+              {!block && (online || d.totalPaise > 0 || d.payments.length > 0) && (
               <>
               <Section title="Amounts">
                 {d.lines.map((l) => (
@@ -243,7 +285,7 @@ export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClo
                   ) : undefined
                 }
               >
-                {d.payments.length === 0 && <p className="text-[13px] text-muted">No payment attempts yet.</p>}
+                {d.payments.length === 0 && <p className="text-[13px] text-muted">No payments yet.</p>}
                 <ul className="space-y-2.5">
                   {d.payments.map((p) => {
                     const refunded = d.refunds.filter((r) => r.paymentId === p.id && r.state !== 'failed').reduce((s, r) => s + r.amountPaise, 0);
@@ -251,15 +293,16 @@ export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClo
                       <li key={p.id} className="rounded-[14px] border border-hairline p-3.5 text-[13px]">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="font-semibold">
-                            {p.method === 'qr' ? 'QR / UPI' : 'PhonePe gateway'} · {formatPaise(p.amountPaise)}
+                            {p.method === 'qr' ? 'QR / UPI' : p.method === 'manual' ? `Recorded · ${MANUAL_METHOD[p.paymentMode ?? 'other'] ?? 'Other'}` : 'PhonePe gateway'} · {formatPaise(p.amountPaise)}
                           </span>
                           <Chip tone={PAYMENT_STATE_TONE[p.state] ?? 'neutral'}>{p.state}</Chip>
                         </div>
                         <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[12.5px]">
                           {p.method === 'qr' && <><dt className="text-muted">UTR</dt><dd className="font-semibold tabular-nums">{p.utr ?? 'not given'}</dd></>}
+                          {p.method === 'manual' && p.utr && <><dt className="text-muted">Reference</dt><dd className="tabular-nums">{p.utr}</dd></>}
                           {p.merchantOrderId && <><dt className="text-muted">Order ID</dt><dd className="break-all">{p.merchantOrderId}</dd></>}
                           {p.gatewayTransactionId && <><dt className="text-muted">Transaction</dt><dd className="break-all">{p.gatewayTransactionId}</dd></>}
-                          {p.paymentMode && <><dt className="text-muted">Mode</dt><dd>{p.paymentMode}</dd></>}
+                          {p.paymentMode && p.method !== 'manual' && <><dt className="text-muted">Mode</dt><dd>{p.paymentMode}</dd></>}
                           {p.errorCode && <><dt className="text-muted">Error</dt><dd>{p.errorCode}</dd></>}
                           <dt className="text-muted">Updated</dt>
                           <dd>{when(p.updatedAt)}</dd>
@@ -302,7 +345,7 @@ export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClo
               </>
               )}
 
-              {d.status !== 'cancelled' && (
+              {active && d.status !== 'completed' && (
                 <button className="btn btn-outline h-12 px-5 text-[16px] text-[#a3261b] !border-[#e3b4ae]" onClick={() => setAction({ kind: 'cancel' })}>
                   {block ? 'Remove block…' : 'Cancel booking…'}
                 </button>
@@ -313,7 +356,7 @@ export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClo
                   {d.history.map((h, i) => (
                     <li key={i}>
                       <p>
-                        <span className="font-semibold">{h.action}</span> <span className="text-muted">· {h.actor} · {when(h.at)}</span>
+                        <span className="font-semibold">{ACTION_NAME[h.action] ?? h.action}</span> <span className="text-muted">· {h.actor} · {when(h.at)}</span>
                       </p>
                       {h.details !== '{}' && <p className="break-all text-muted">{h.details}</p>}
                     </li>
@@ -343,8 +386,12 @@ export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClo
 function ActionDialog({ action, bookingRef, onClose, onDone }: { action: Action; bookingRef: string; onClose: () => void; onDone: () => void }) {
   const { call } = useAdmin();
   const copy = ACTION_COPY[action.kind];
-  const [note, setNote] = useState(action.kind === 'cancel' ? 'Cancelled by owner' : '');
-  const [amount, setAmount] = useState(action.kind === 'refund' ? String(action.max / 100) : '');
+  const [note, setNote] = useState(
+    action.kind === 'cancel' ? 'Cancelled by owner' : action.kind === 'complete' ? 'Guest checked out' : action.kind === 'confirmBooking' ? 'Confirmed by owner' : '',
+  );
+  const [amount, setAmount] = useState(action.kind === 'refund' ? String(action.max / 100) : action.kind === 'record' && action.balance ? String(action.balance / 100) : '');
+  const [method, setMethod] = useState('cash');
+  const [reference, setReference] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLFormElement>(null);
@@ -354,10 +401,21 @@ function ActionDialog({ action, bookingRef, onClose, onDone }: { action: Action;
     e.preventDefault();
     setBusy(true);
     setError('');
-    const path = { verify: 'verify-qr', reject: 'reject-qr', refund: 'refund', cancel: 'cancel', clear: 'clear-attention' }[action.kind];
+    const path = {
+      verify: 'verify-qr',
+      reject: 'reject-qr',
+      refund: 'refund',
+      cancel: 'cancel',
+      clear: 'clear-attention',
+      confirmBooking: 'confirm',
+      rejectBooking: 'reject',
+      complete: 'complete',
+      record: 'payments',
+    }[action.kind];
     const body: Record<string, unknown> = { note };
     if ('payment' in action) body.paymentId = action.payment.id;
-    if (action.kind === 'refund') body.amount = Number(amount);
+    if (action.kind === 'refund' || action.kind === 'record') body.amount = Number(amount);
+    if (action.kind === 'record') Object.assign(body, { method, reference });
     try {
       await call(`/bookings/${bookingRef}/${path}`, { method: 'POST', body });
       onDone();
@@ -383,6 +441,27 @@ function ActionDialog({ action, bookingRef, onClose, onDone }: { action: Action;
             <Field id="act-amount" label={`Amount (₹, up to ${formatPaise(action.max)})`}>
               <input id="act-amount" className="field" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
             </Field>
+          )}
+          {action.kind === 'record' && (
+            <>
+              <Field id="act-amount" label="Amount received (₹)" hint={action.balance ? `Balance due: ${formatPaise(action.balance)}` : undefined}>
+                <input id="act-amount" className="field" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field id="act-method" label="How">
+                  <select id="act-method" className="field" value={method} onChange={(e) => setMethod(e.target.value)}>
+                    {Object.entries(MANUAL_METHOD).map(([id, label]) => (
+                      <option key={id} value={id}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field id="act-ref" label="Reference" optional>
+                  <input id="act-ref" className="field" value={reference} maxLength={40} onChange={(e) => setReference(e.target.value)} placeholder="UTR / receipt no." />
+                </Field>
+              </div>
+            </>
           )}
           <Field id="act-note" label="Note for the audit log">
             <textarea
@@ -414,6 +493,35 @@ function ActionDialog({ action, bookingRef, onClose, onDone }: { action: Action;
     </div>
   );
 }
+
+const MANUAL_METHOD: Record<string, string> = { cash: 'Cash', upi: 'UPI', bank: 'Bank transfer', other: 'Other' };
+
+/** Plain-English names for the audit history. */
+const ACTION_NAME: Record<string, string> = {
+  'booking.created': 'Booked online',
+  'booking.created_by_owner': 'Added by owner',
+  'booking.updated_by_owner': 'Edited',
+  'booking.confirmed': 'Confirmed (payment verified)',
+  'booking.confirmed_by_owner': 'Confirmed by owner',
+  'booking.rejected': 'Rejected',
+  'booking.cancelled': 'Cancelled',
+  'booking.completed': 'Marked completed',
+  'booking.expired': 'Hold expired (unpaid)',
+  'payment.qr_submitted': 'Guest says paid (UPI)',
+  'payment.qr_verified': 'UPI payment verified',
+  'payment.qr_rejected': 'UPI payment rejected',
+  'payment.recorded': 'Payment recorded',
+  'refund.recorded_manual': 'Refund recorded',
+  'email.verify_request_sent': 'Owner emailed: payment to verify',
+  'email.confirmation_sent': 'Owner emailed: booking confirmed',
+  'email.guest_confirmed_sent': 'Guest emailed: confirmed',
+  'email.guest_confirmed_failed': 'Guest email FAILED: confirmed',
+  'email.guest_rejected_sent': 'Guest emailed: not accepted',
+  'email.guest_rejected_failed': 'Guest email FAILED: not accepted',
+  'request.approved': 'Enquiry approved',
+  'block.created': 'Dates blocked',
+  'block.updated': 'Block edited',
+};
 
 function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (

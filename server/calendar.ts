@@ -129,6 +129,8 @@ export type AdminBookingInput = {
   source?: unknown;
   notes?: unknown;
   reason?: unknown;
+  /** Agreed total in rupees (optional; 0 / empty = not recorded) */
+  totalPrice?: unknown;
 };
 
 const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().replace(/\s+/g, ' ').slice(0, max) : '');
@@ -157,8 +159,11 @@ function parseAdminInput(input: AdminBookingInput) {
   if (nights > 365) throw bad('checkOut', 'That is more than a year — please split it into shorter periods.');
 
   if (kind === 'block') {
-    return { kind, optionId, checkIn, checkOut, nights, guestName: '', guestPhone: '', guests: 0, occasion: '', source: 'block', notes: str(input.reason, 300) } as const;
+    return { kind, optionId, checkIn, checkOut, nights, guestName: '', guestPhone: '', guests: 0, occasion: '', source: 'block', notes: str(input.reason, 300), totalPaise: 0 } as const;
   }
+  const priceRaw = input.totalPrice === undefined || input.totalPrice === null || String(input.totalPrice).trim() === '' ? 0 : Number(input.totalPrice);
+  const totalPaise = Math.round(priceRaw * 100);
+  if (!Number.isFinite(priceRaw) || totalPaise < 0 || totalPaise > 100_000_000) throw bad('totalPrice', 'Enter the agreed total in rupees, or leave it empty.');
   const guestName = str(input.guestName, 80);
   if (guestName.length < 2) throw bad('guestName', 'Enter the guest’s name.');
   const phoneRaw = str(input.guestPhone, 20);
@@ -167,7 +172,7 @@ function parseAdminInput(input: AdminBookingInput) {
   const guests = Number(input.guests);
   if (!Number.isInteger(guests) || guests < 1 || guests > GROUP_MAX_GUESTS) throw bad('guests', `Guests must be between 1 and ${GROUP_MAX_GUESTS}.`);
   const source = (SOURCES as readonly string[]).includes(String(input.source)) ? String(input.source) : 'other';
-  return { kind, optionId, checkIn, checkOut, nights, guestName, guestPhone, guests, occasion: str(input.occasion, 80), source, notes: str(input.notes, 1000) } as const;
+  return { kind, optionId, checkIn, checkOut, nights, guestName, guestPhone, guests, occasion: str(input.occasion, 80), source, notes: str(input.notes, 1000), totalPaise } as const;
 }
 
 async function holdOrConflict(ctx: Ctx, bookingId: number, option: OptionId, checkIn: string, checkOut: string) {
@@ -203,9 +208,9 @@ export async function createAdminBooking(ctx: Ctx, input: AdminBookingInput, act
       nights: v.nights,
       guests: v.guests,
       nightly_paise: 0,
-      lines_json: '[]',
-      total_paise: 0,
-      pay_now_paise: 0,
+      lines_json: v.totalPaise > 0 ? JSON.stringify([{ label: 'Agreed price', amountPaise: v.totalPaise }]) : '[]',
+      total_paise: v.totalPaise,
+      pay_now_paise: v.totalPaise,
       guest_name: v.guestName,
       guest_phone: v.guestPhone,
       guest_email: '',
@@ -234,7 +239,7 @@ export async function updateAdminBooking(ctx: Ctx, ref: string, input: AdminBook
   const existing = await getBookingByRef(ctx, ref);
   if (!existing) throw new HttpError(404, 'Booking not found.', 'NOT_FOUND');
   if (existing.source === 'website_online') throw new HttpError(409, 'Online bookings can’t be edited here. Cancel and re-enter it if the dates changed.', 'NOT_EDITABLE');
-  if (existing.status === 'cancelled') throw new HttpError(409, 'This booking is cancelled.', 'NOT_EDITABLE');
+  if (existing.status === 'cancelled' || existing.status === 'rejected') throw new HttpError(409, `This booking is ${existing.status}.`, 'NOT_EDITABLE');
   const v = parseAdminInput({ ...input, kind: existing.kind });
   return ctx.db.tx(async () => {
     await releaseNights(ctx, existing.id);
@@ -250,6 +255,9 @@ export async function updateAdminBooking(ctx: Ctx, ref: string, input: AdminBook
       occasion: v.occasion,
       source: existing.kind === 'block' ? 'block' : v.source,
       notes: v.notes,
+      total_paise: v.totalPaise,
+      pay_now_paise: v.totalPaise,
+      lines_json: v.totalPaise > 0 ? JSON.stringify([{ label: 'Agreed price', amountPaise: v.totalPaise }]) : '[]',
       updated_at: iso(ctx),
     });
     await holdOrConflict(ctx, existing.id, v.optionId, v.checkIn, v.checkOut);
@@ -407,7 +415,7 @@ export async function declineRequest(ctx: Ctx, id: number, actor: string) {
 export async function calendarData(ctx: Ctx, from: string, to: string) {
   const pending = await expireRequests(ctx);
   const bookings = (await ctx.db.query<BookingRow>('bookings', { where: [['check_out', '>', from]], orderBy: [['check_in']] })).filter(
-    (b) => b.check_in < to && b.status !== 'cancelled' && b.status !== 'expired',
+    (b) => b.check_in < to && b.status !== 'cancelled' && b.status !== 'expired' && b.status !== 'rejected',
   );
   const requests = pending.filter((r) => r.check_in < to && r.check_out > from).sort((a, b) => (a.check_in < b.check_in ? -1 : 1));
   return {
@@ -415,7 +423,7 @@ export async function calendarData(ctx: Ctx, from: string, to: string) {
       ref: b.ref,
       kind: b.kind,
       // booked = confirmed; pending = online booking still awaiting payment / verification
-      state: b.kind === 'block' ? 'block' : b.status === 'confirmed' ? 'booked' : 'pending',
+      state: b.kind === 'block' ? 'block' : b.status === 'confirmed' || b.status === 'completed' ? 'booked' : 'pending',
       optionId: b.room_id,
       optionName: b.room_name,
       units: unitsFor(b.room_id),

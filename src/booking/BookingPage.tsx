@@ -210,6 +210,27 @@ function StatusHeader({ booking: b, checking }: { booking: BookingView; checking
           )}
         </Panel>
       );
+    case 'completed':
+      return (
+        <Panel className="bg-[#eef4ef]">
+          <h1 className="heading text-[30px] leading-[1.05]">
+            Thank you for <span className="accent">staying</span>
+          </h1>
+          <p className="mt-3 text-[14.5px] leading-[1.6] text-ink/80">
+            Your stay at Golden Stay is complete. We hope you enjoyed it — {contactLink} any time to book again.
+          </p>
+        </Panel>
+      );
+    case 'rejected':
+      return (
+        <Panel>
+          <h1 className="heading text-[30px] leading-[1.05]">This booking request wasn’t accepted</h1>
+          <p className="mt-3 text-[14.5px] leading-[1.6] text-muted">
+            Sorry — Golden Stay couldn’t accept this booking for these dates.
+            {b.amountPaidPaise > 0 ? ' Golden Stay will contact you about the refund.' : ' No payment was taken.'} If other dates would work, please {contactLink}.
+          </p>
+        </Panel>
+      );
     case 'cancelled':
       return (
         <Panel>

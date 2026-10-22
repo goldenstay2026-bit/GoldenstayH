@@ -98,10 +98,20 @@ Backups: Admin → Bookings → *All* → **CSV** (monthly), plus the Google She
 
 ## Admin (`/admin/`)
 
-- **Bookings**: filters (Needs action, Awaiting payment, Pending verification, Confirmed, …), search, and a detail panel with guest info, stay, amounts, every payment attempt (UTR / PhonePe order + transaction IDs), refunds and full history.
-- Actions: verify / reject QR payment, check status with PhonePe, refund (gateway via API; QR recorded after refunding in the PhonePe Business app), cancel booking, mark an issue resolved.
-- **Rooms & prices**: change nightly price or turn online booking off per room. Existing bookings keep their booked price.
-- **Audit log**: every guest, system, PhonePe and admin action. All admin actions require a note.
+Owner sign-in with Firebase (`ADMIN_EMAILS`, verified email). Every admin API route checks this on the server; the screens only show what the server allows. Sidebar on desktop, bottom bar + More on phones.
+
+- **Dashboard**: total / pending / confirmed / cancelled bookings, revenue received (payments − refunds) with a 12-month chart, upcoming check-ins, recent bookings, occupancy per room, and notifications (new enquiries, payments to verify, cancellations, check-ins today/tomorrow; the bell counts what's new since you last opened it).
+- **Bookings**: searchable table (ID, guest, phone/email, dates, guests, total, payment, status), filters for when / status / payment / room, CSV export. Open a booking to **Confirm** (dates re-checked on the server), **Reject** (releases the dates), **Cancel**, **Mark completed** (from check-out), **Record payment** (cash / UPI / bank, for Paid and Partially paid), refund, verify or reject a UPI payment, edit owner-entered bookings, WhatsApp the guest. Every change asks for confirmation and is written to the booking's history.
+- **Calendar**: month view per room with guest names; booked, blocked, enquiry-pending and awaiting-payment colours with a legend; tap a day for its bookings or to add one; block a date range (New → Block dates only) and remove a block from its details. The check-out day is free for the next guest.
+- **Requests**: website enquiries — approve (creates the booking), decline, call, WhatsApp templates.
+- **Guests**: one row per phone number (or email) with bookings, enquiries, nights and amount paid; search by name, phone, email or booking ID.
+- **Property settings**: nightly prices and online bookability per room, **seasonal prices** (date ranges with their own nightly price, used in quotes), **stay details & house rules** (check-in/out times, cancellation and refund terms, smoking, pets, visitors, quiet hours, deposits — shown on the public policy pages and in confirmations; empty = hidden), and the audit log.
+
+Payment status shown everywhere: **Paid** (received ≥ total), **Partially paid**, **Pending**, **To verify** (guest says paid by UPI), **Refunded**, **Not recorded** (owner booking without a price). Booking status: Pending (awaiting payment / to verify), Confirmed, Completed, Rejected, Cancelled, Expired.
+
+**Emails to guests** (online bookings): "confirmed" when a booking is confirmed and "not accepted" when it is rejected, sent from the owner's Gmail through the Apps Script (`guest_email` action — paste the updated `scripts/google-apps-script.gs` and deploy a new version). The booking history says *Guest emailed* only when the email really went out, *Guest email FAILED* otherwise. Enquiry guests (no email address) are contacted on WhatsApp.
+
+Room photos, descriptions and amenities live in `src/data/site.ts` (the homepage is pre-rendered for search engines), so they are changed in code, not in the admin.
 
 ## Turning on the PhonePe gateway
 

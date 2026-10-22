@@ -6,7 +6,7 @@
 import type { BookingStatus, PaymentStatus } from '../../shared/types.ts';
 import { formatPaise } from '../../shared/catalog.ts';
 import { formatIndianMobile } from '../../shared/validate.ts';
-import type { BookingRow, PaymentRow } from '../bookings.ts';
+import { paymentLabel, type BookingRow, type PaymentLabel, type PaymentRow } from '../bookings.ts';
 import type { Config } from '../config.ts';
 import { inBackground } from '../background.ts';
 import { formatIST } from './time.ts';
@@ -18,6 +18,19 @@ const STATUS: Record<BookingStatus, string> = {
   confirmed: 'Confirmed',
   cancelled: 'Cancelled',
   expired: 'Expired (unpaid)',
+  rejected: 'Rejected',
+  completed: 'Completed',
+};
+
+const PAYMENT_LABEL: Record<PaymentLabel, string> = {
+  paid: 'Paid',
+  partially_paid: 'Partially paid',
+  pending: 'Not paid',
+  to_verify: 'To verify',
+  refunded: 'Refunded',
+  failed: 'Failed',
+  not_recorded: 'Offline (not tracked)',
+  none: '—',
 };
 
 const PAYMENT: Record<PaymentStatus, string> = {
@@ -43,7 +56,7 @@ export function bookingSheetRow(b: BookingRow, payments: PaymentRow[], paidPaise
     return {
       ref: b.ref,
       status: block ? (b.status === 'cancelled' ? 'Block removed' : 'Blocked') : STATUS[b.status],
-      payment: block ? '—' : 'Offline (not tracked)',
+      payment: PAYMENT_LABEL[paymentLabel(b, paidPaise)],
       guestName: block ? '' : b.guest_name,
       guestPhone: block || !b.guest_phone ? '' : /^\d{10}$/.test(b.guest_phone) ? formatIndianMobile(b.guest_phone) : b.guest_phone,
       guestEmail: '',
@@ -52,8 +65,8 @@ export function bookingSheetRow(b: BookingRow, payments: PaymentRow[], paidPaise
       checkOut: b.check_out,
       nights: b.nights,
       guests: b.guests,
-      total: '—',
-      paid: '—',
+      total: b.total_paise > 0 ? formatPaise(b.total_paise) : '—',
+      paid: paidPaise > 0 ? formatPaise(paidPaise) : '—',
       method: block ? 'Blocked by owner' : `Added by owner · ${SOURCE[b.source] ?? b.source}`,
       reference: '',
       bookedAt: formatIST(new Date(b.created_at)),

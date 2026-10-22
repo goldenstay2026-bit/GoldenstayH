@@ -3,7 +3,8 @@
 // Java process can outlive `emulators:exec`, so it is stopped afterwards.
 import { spawnSync } from 'node:child_process';
 
-const files = process.argv.slice(2).join(' ') || '"server/test/**/*.test.ts"';
+// One test file at a time keeps the emulator's memory use low (fine on small machines).
+const files = process.argv.slice(2).join(' ') || '--test-concurrency=1 "server/test/**/*.test.ts"';
 const r = spawnSync(
   'npx',
   ['firebase', 'emulators:exec', '--only', 'firestore', '--project', 'demo-goldenstay', `"node --disable-warning=ExperimentalWarning --test ${files.replace(/"/g, '\\"')}"`],

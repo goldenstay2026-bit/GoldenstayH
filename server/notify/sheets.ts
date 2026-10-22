@@ -110,3 +110,7 @@ export const upsertBookingRow = (cfg: SheetsCfg, row: BookingSheetRow) => postTo
  */
 export const sendOwnerEmail = (cfg: SheetsCfg, email: { subject: string; text: string; html: string }) =>
   postToAppsScript(cfg, { action: 'booking_confirmed', ...email });
+
+/** Email to a guest about their online booking (Apps Script "guest_email"; replies go to the owner). */
+export const sendGuestEmail = (cfg: SheetsCfg, email: { to: string; subject: string; text: string; html: string }) =>
+  postToAppsScript(cfg, { action: 'guest_email', ...email });

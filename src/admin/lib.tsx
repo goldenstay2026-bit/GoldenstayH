@@ -4,6 +4,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { OptionId, Unit } from '../../shared/catalog.ts';
 import { addDaysISO, formatISODate } from '../../shared/validate.ts';
+import type { BookingStatus, PropertySettings } from '../../shared/types.ts';
 import { policies } from '../data/site';
 import { ApiError, api } from '../lib/api';
 
@@ -21,6 +22,9 @@ type AdminCtx = {
   live: boolean;
   signOut: () => void;
   getToken: () => Promise<string | null>;
+  /** Stay details & house rules from Admin → Settings. */
+  property: PropertySettings | null;
+  refreshProperty: () => void;
 };
 
 const Ctx = createContext<AdminCtx | null>(null);
@@ -33,6 +37,17 @@ export const useAdmin = () => {
 export function AdminProvider({ me, getToken, onAuthLost, signOut, children }: { me: Me; getToken: () => Promise<string | null>; onAuthLost: () => void; signOut: () => void; children: ReactNode }) {
   const [version, setVersion] = useState({ bookings: 0, requests: 0 });
   const [live, setLive] = useState(false);
+  const [property, setProperty] = useState<PropertySettings | null>(null);
+  const [propertyTick, setPropertyTick] = useState(0);
+  const refreshProperty = useCallback(() => setPropertyTick((t) => t + 1), []);
+  useEffect(() => {
+    api<PropertySettings>('/property')
+      .then((p) => {
+        setProperty(p);
+        stayTimes = { checkIn: p.checkInTime ?? policies.checkInTime, checkOut: p.checkOutTime ?? policies.checkOutTime };
+      })
+      .catch(() => undefined);
+  }, [propertyTick]);
   const lost = useRef(onAuthLost);
   lost.current = onAuthLost;
 
@@ -86,7 +101,7 @@ export function AdminProvider({ me, getToken, onAuthLost, signOut, children }: {
     };
   }, [getToken]);
 
-  return <Ctx.Provider value={{ me, call, version, live, signOut, getToken }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ me, call, version, live, signOut, getToken, property, refreshProperty }}>{children}</Ctx.Provider>;
 }
 
 // ---------- shapes from the server ----------
@@ -128,6 +143,51 @@ export type RequestItem = {
   decidedAt: string | null;
 };
 
+// ---------- payments, statuses, dashboard ----------
+
+export type PaymentLabel = 'paid' | 'partially_paid' | 'pending' | 'to_verify' | 'refunded' | 'failed' | 'not_recorded' | 'none';
+export const PAYMENT_LABEL: Record<PaymentLabel, [string, 'neutral' | 'success' | 'warn' | 'danger' | 'info']> = {
+  paid: ['Paid', 'success'],
+  partially_paid: ['Partially paid', 'warn'],
+  pending: ['Pending', 'neutral'],
+  to_verify: ['To verify', 'warn'],
+  refunded: ['Refunded', 'info'],
+  failed: ['Failed', 'danger'],
+  not_recorded: ['Not recorded', 'neutral'],
+  none: ['—', 'neutral'],
+};
+
+export type BookingSummary = {
+  ref: string;
+  status: BookingStatus;
+  payment: PaymentLabel;
+  guestName: string;
+  guestPhone: string;
+  guestEmail: string;
+  roomName: string;
+  optionId: OptionId;
+  checkIn: string;
+  checkOut: string;
+  nights: number;
+  guests: number;
+  totalPaise: number;
+  paidPaise: number;
+  source: string;
+  createdAt: string;
+};
+
+export type AdminNotification = { kind: 'request' | 'payment' | 'cancellation' | 'checkin'; at: string; title: string; detail: string; ref?: string; requestId?: number };
+
+export type DashboardData = {
+  today: string;
+  counts: { totalBookings: number; pendingRequests: number; awaitingPayment: number; confirmed: number; completed: number; cancelled: number; upcomingCheckins: number };
+  revenue: { totalPaise: number; thisMonthPaise: number; byMonth: { month: string; paise: number }[] };
+  upcoming: BookingSummary[];
+  recent: BookingSummary[];
+  occupancy: { month: string; days: number; units: { unit: Unit; booked: number; blocked: number; percent: number }[] }[];
+  notifications: AdminNotification[];
+};
+
 export const SOURCE_LABEL: Record<string, string> = {
   website_online: 'Website (paid online)',
   website_request: 'Website enquiry',
@@ -162,13 +222,16 @@ export const when = (iso: string) =>
 
 export const waUrl = (number: string, text: string) => `https://wa.me/${number.replace(/\D/g, '')}?text=${encodeURIComponent(text)}`;
 
-/** Booking confirmation. Check-in/out times are added only when set in site policies. */
+/** Check-in/out times for messages: from Admin → Settings (loaded by AdminProvider), else site.ts. */
+let stayTimes: { checkIn: string | null; checkOut: string | null } = { checkIn: policies.checkInTime, checkOut: policies.checkOutTime };
+
+/** Booking confirmation. Check-in/out times are added only when they are set. */
 export function confirmationMessage(b: { name: string; optionName: string; checkIn: string; checkOut: string; guests: number }) {
   return [
     `Hello ${b.name}, your booking at Golden Stay is confirmed.`,
     `Room: ${b.optionName}`,
-    `Check-in: ${formatISODate(b.checkIn)}${policies.checkInTime ? ` from ${policies.checkInTime}` : ''}`,
-    `Check-out: ${formatISODate(b.checkOut)}${policies.checkOutTime ? ` by ${policies.checkOutTime}` : ''}`,
+    `Check-in: ${formatISODate(b.checkIn)}${stayTimes.checkIn ? ` from ${stayTimes.checkIn}` : ''}`,
+    `Check-out: ${formatISODate(b.checkOut)}${stayTimes.checkOut ? ` by ${stayTimes.checkOut}` : ''}`,
     `Guests: ${b.guests}`,
     'Please bring a valid photo ID for all adult guests. See you soon!',
   ].join('\n');

@@ -108,6 +108,8 @@ export async function startMockNotify() {
   const telegram: { chat_id: string; text: string; parse_mode: string; reply_markup?: unknown }[] = [];
   const rows: Record<string, unknown>[] = [];
   const emails: Record<string, any>[] = [];
+  /** Emails to guests (Apps Script "guest_email"). */
+  const guestEmails: Record<string, any>[] = [];
   /** Mock "Bookings" tab: latest row per booking ID, plus every upsert received. */
   const bookingRows = new Map<string, Record<string, any>>();
   const upserts: Record<string, any>[] = [];
@@ -140,6 +142,7 @@ export async function startMockNotify() {
       let result: Record<string, unknown>;
       if (mode.sheets === 'fail' || j.secret !== SHEETS_SECRET) result = { ok: false, error: 'unauthorized' };
       else if (j.action === 'booking_confirmed') result = (emails.push(j), { ok: true });
+      else if (j.action === 'guest_email') result = (guestEmails.push(j), { ok: true });
       else if (j.action === 'booking_upsert') {
         upserts.push(j.booking);
         const cur = bookingRows.get(j.booking.ref);
@@ -158,7 +161,7 @@ export async function startMockNotify() {
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  return { base, telegram, rows, emails, bookingRows, upserts, mode, close: () => new Promise<void>((r) => server.close(() => r())) };
+  return { base, telegram, rows, emails, guestEmails, bookingRows, upserts, mode, close: () => new Promise<void>((r) => server.close(() => r())) };
 }
 
 export type Harness = Awaited<ReturnType<typeof startHarness>>;

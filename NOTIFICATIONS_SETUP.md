@@ -73,6 +73,10 @@ The confirmation email always goes to **goldenstay2026@gmail.com**. That address
 
 > **Already set this up before and updating the script?** Paste the new code, **Save**, run **sendTestEmail** once (step 7), then Deploy → **Manage deployments** → ✏️ edit → Version: **New version** → Deploy. The URL stays the same.
 
+### Updating the script (guest emails)
+
+The script now also emails guests about their online booking (confirmed / not accepted). After updating `scripts/google-apps-script.gs`: open the Apps Script editor, replace all the code with the new file, **Save**, then **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy**. The URL stays the same. Until you do this, guest emails are recorded in the booking history as failed — nothing else is affected.
+
 ## 4. Add the settings to the server and restart
 
 The four values are **secrets**. They go only in the server's `.env` file (or your hosting provider's "Environment variables" screen), never in website code:
