@@ -28,7 +28,15 @@ const usingEmulator = () => Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 /** The service-account key from FIREBASE_SERVICE_ACCOUNT (JSON or base64 JSON) or FIREBASE_SERVICE_ACCOUNT_FILE. */
 function serviceAccount(cfg: Config['firebase']): ServiceAccount | null {
   let raw = cfg.serviceAccount;
-  if (!raw && cfg.serviceAccountFile) raw = fs.readFileSync(cfg.serviceAccountFile, 'utf8');
+  if (!raw && cfg.serviceAccountFile) {
+    if (!fs.existsSync(cfg.serviceAccountFile)) {
+      throw new Error(
+        `FIREBASE_SERVICE_ACCOUNT_FILE points to ${cfg.serviceAccountFile}, which isn't on this server. ` +
+          'On Vercel, delete FIREBASE_SERVICE_ACCOUNT_FILE and set FIREBASE_SERVICE_ACCOUNT to the key itself.',
+      );
+    }
+    raw = fs.readFileSync(cfg.serviceAccountFile, 'utf8');
+  }
   if (!raw) return null;
   if (!raw.trimStart().startsWith('{')) raw = Buffer.from(raw, 'base64').toString('utf8');
   const j = JSON.parse(raw) as { project_id: string; client_email: string; private_key: string };
