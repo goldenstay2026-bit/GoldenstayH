@@ -42,6 +42,24 @@ async function postToAppsScript(cfg: SheetsCfg, payload: Record<string, unknown>
   if (!res.ok || json.ok !== true) throw new Error(`Google Apps Script failed: ${json.error ?? `HTTP ${res.status}`}`);
 }
 
+/**
+ * Can the deployed script email guests? Asks it to email an invalid address:
+ * the current script refuses the recipient (nothing is sent), an older one
+ * doesn't know the action.
+ */
+export async function guestEmailStatus(cfg: SheetsCfg): Promise<'ready' | 'update the Apps Script (new version)' | 'not configured' | string> {
+  if (!sheetsConfigured(cfg)) return 'not configured';
+  try {
+    await postToAppsScript(cfg, { action: 'guest_email', to: 'invalid', subject: '', text: '', html: '' });
+    return 'unexpected reply';
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (msg.includes('invalid recipient')) return 'ready';
+    if (msg.includes('unknown action')) return 'update the Apps Script (new version)';
+    return msg.replace(/^Google Apps Script failed: /, '').slice(0, 160);
+  }
+}
+
 /** Appends a website enquiry to the "Enquiries" sheet. */
 export const appendToSheet = (cfg: SheetsCfg, row: SheetRow) => postToAppsScript(cfg, { action: 'enquiry', ...row });
 

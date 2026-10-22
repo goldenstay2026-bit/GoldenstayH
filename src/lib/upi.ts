@@ -1,19 +1,18 @@
 // UPI payment links with the amount pre-filled (NPCI "UPI linking" format).
 // Tapping one on a phone opens the UPI app with payee, amount and note set.
-// Note: some apps limit pre-filled payments to merchant UPI IDs; the original
-// shop QR stays available as a fallback.
+// The link is the shop QR's own contents (payee, name, merchant code, mode)
+// plus only the amount, currency and note: apps decline merchant payments
+// whose link doesn't match the merchant's QR, and a transaction reference (tr)
+// is reserved for orders the merchant's bank created. The original shop QR
+// stays available as a fallback.
 
-export type UpiParams = { upiId: string; payeeName: string; amountPaise: number; note: string; ref: string };
+export type UpiParams = { payload: string; amountPaise: number; note: string };
 
 function query(p: UpiParams) {
-  const q = new URLSearchParams({
-    pa: p.upiId,
-    pn: p.payeeName,
-    am: (p.amountPaise / 100).toFixed(2),
-    cu: 'INR',
-    tn: p.note.slice(0, 50),
-    tr: p.ref,
-  });
+  const q = new URLSearchParams(p.payload.slice(p.payload.indexOf('?') + 1));
+  q.set('am', (p.amountPaise / 100).toFixed(2));
+  q.set('cu', 'INR');
+  q.set('tn', p.note.slice(0, 50));
   // UPI apps expect %20 rather than + for spaces, and a plain @ in the UPI ID.
   return q.toString().replace(/\+/g, '%20').replace(/%40/g, '@');
 }

@@ -32,7 +32,8 @@ export type PublicRoom = { id: RoomId; name: string; pricePaise: number; bookabl
 
 export type PublicConfig = {
   gatewayEnabled: boolean;
-  qr: { upiId: string; payeeLabel: string; imageUrl: string };
+  /** payload: the shop QR's exact contents; amount links add only am/cu/tn to it. */
+  qr: { upiId: string; payeeLabel: string; imageUrl: string; payload: string };
   holdMinutes: number;
 };
 

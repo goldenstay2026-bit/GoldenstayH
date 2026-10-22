@@ -48,13 +48,7 @@ export function UpiPay({ booking, config, secondary, onPaid }: Props) {
   useEffect(() => setPhone(isPhone()), []);
 
   const amount = formatPaise(booking.payNowPaise);
-  const params: UpiParams = {
-    upiId: config.qr.upiId,
-    payeeName: config.qr.payeeLabel,
-    amountPaise: booking.payNowPaise,
-    note: `Golden Stay ${booking.ref}`,
-    ref: booking.ref,
-  };
+  const params: UpiParams = { payload: config.qr.payload, amountPaise: booking.payNowPaise, note: `Golden Stay ${booking.ref}` };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();

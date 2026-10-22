@@ -15,7 +15,8 @@ export type Config = {
   holdMinutes: number;
   /** emails: Firebase accounts allowed into /admin (verified email required). */
   admin: { passwordHash: string; sessionHours: number; emails: string[] };
-  qr: { upiId: string; payeeLabel: string; imageUrl: string };
+  /** payload: the shop QR's exact contents; amount links add only am/cu/tn to it. */
+  qr: { upiId: string; payeeLabel: string; imageUrl: string; payload: string };
   phonepe: {
     enabled: boolean;
     env: PhonePeEnv;
@@ -56,6 +57,26 @@ function ownerLinkSecret(nodeEnv: string): string {
   if (nodeEnv === 'production') throw new Error('OWNER_LINK_SECRET (32+ random characters) is required in production.');
   console.warn('[config] OWNER_LINK_SECRET not set — using a temporary one; owner email links stop working after a restart.');
   return crypto.randomBytes(32).toString('hex');
+}
+
+/** Contents of the owner's PhonePe shop QR (public/images/phonepe-merchant-qr.jpg). */
+const SHOP_QR = 'upi://pay?pa=Q089453569@ybl&pn=PhonePeMerchant&mc=0000&mode=02&purpose=00';
+
+/**
+ * The UPI payee. MERCHANT_UPI_QR = the text inside a shop QR (scan it with any
+ * QR reader); MERCHANT_UPI_ID alone (e.g. a personal UPI ID) is also accepted.
+ */
+function merchantQr(): { upiId: string; payload: string } {
+  const id = env('MERCHANT_UPI_ID');
+  let payload = env('MERCHANT_UPI_QR') || (id && !SHOP_QR.includes(`pa=${id}&`) ?`upi://pay?pa=${id}&pn=${encodeURIComponent(env('MERCHANT_PAYEE_LABEL', 'Golden Stay'))}` : SHOP_QR);
+  if (!/^upi:\/\/pay\?/i.test(payload)) throw new Error('MERCHANT_UPI_QR must be the text of a UPI QR (starting with upi://pay?).');
+  // Drop anything the booking sets itself.
+  const q = new URLSearchParams(payload.slice(payload.indexOf('?') + 1));
+  for (const k of ['am', 'cu', 'tn', 'tr', 'tid']) q.delete(k);
+  const upiId = q.get('pa') ?? '';
+  if (!/^[\w.-]+@[\w.-]+$/.test(upiId)) throw new Error('The UPI QR has no valid UPI ID (pa=…).');
+  payload = `upi://pay?${q.toString().replace(/\+/g, '%20').replace(/%40/g, '@')}`;
+  return { upiId, payload };
 }
 
 export function loadConfig(): Config {
@@ -105,8 +126,7 @@ export function loadConfig(): Config {
         .filter(Boolean),
     },
     qr: {
-      // From the owner's PhonePe merchant QR (upi://pay?pa=Q089453569@ybl…).
-      upiId: env('MERCHANT_UPI_ID', 'Q089453569@ybl'),
+      ...merchantQr(),
       payeeLabel: env('MERCHANT_PAYEE_LABEL', 'P.S'),
       imageUrl: '/images/phonepe-merchant-qr.jpg',
     },

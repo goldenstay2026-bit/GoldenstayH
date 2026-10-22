@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createApp } from './app.ts';
 import { createContext } from './context.ts';
 import { parseServiceAccount } from './firebase.ts';
+import { guestEmailStatus } from './notify/sheets.ts';
 
 // A stray background error must never take the whole function down.
 process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
@@ -21,6 +22,13 @@ const json = (res: ServerResponse, status: number, body: unknown) => {
   res.setHeader('Cache-Control', 'no-store');
   res.end(JSON.stringify(body));
 };
+
+// The health page is public: ask the Apps Script at most every 5 minutes.
+let emailCheck: { at: number; status: Promise<string> } | null = null;
+function cachedGuestEmailStatus(cfg: Parameters<typeof guestEmailStatus>[0]) {
+  if (!emailCheck || Date.now() - emailCheck.at > 5 * 60_000) emailCheck = { at: Date.now(), status: guestEmailStatus(cfg) };
+  return emailCheck.status;
+}
 
 /** GET /api/health — what is configured (yes/no only, never values) and whether Firestore answers. */
 async function health(res: ServerResponse) {
@@ -40,16 +48,26 @@ async function health(res: ServerResponse) {
     }
   }
   let firestore = 'not checked';
+  let guestEmails = 'not checked';
   if (app) {
+    const ctx = createContext();
     try {
-      const ctx = createContext();
       await ctx.db.get('meta', 'changes-bookings');
       firestore = 'ok';
     } catch (e) {
       firestore = `error: ${String((e as Error).message).slice(0, 200)}`;
     }
+    guestEmails = await cachedGuestEmailStatus(ctx.config.notify);
   }
-  json(res, startupError ? 500 : 200, { ok: !startupError && firestore === 'ok', node: process.version, settings, serviceAccountKey: key, startup: startupError ?? 'ok', firestore });
+  json(res, startupError ? 500 : 200, {
+    ok: !startupError && firestore === 'ok',
+    node: process.version,
+    settings,
+    serviceAccountKey: key,
+    startup: startupError ?? 'ok',
+    firestore,
+    guestEmails,
+  });
 }
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {

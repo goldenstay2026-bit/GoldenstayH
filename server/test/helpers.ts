@@ -182,7 +182,7 @@ export async function startHarness(opts: { gateway?: boolean; rateLimits?: boole
     trustProxy: false,
     holdMinutes: 30,
     admin: { passwordHash: hashPassword(ADMIN_PASSWORD), sessionHours: 12, emails: ['owner@goldenstay.test'] },
-    qr: { upiId: 'Q089453569@ybl', payeeLabel: 'P.S', imageUrl: '/images/phonepe-merchant-qr.jpg' },
+    qr: { upiId: 'Q089453569@ybl', payeeLabel: 'P.S', imageUrl: '/images/phonepe-merchant-qr.jpg', payload: 'upi://pay?pa=Q089453569@ybl&pn=PhonePeMerchant&mc=0000&mode=02&purpose=00' },
     phonepe: {
       enabled: Boolean(opts.gateway),
       env: 'sandbox',
