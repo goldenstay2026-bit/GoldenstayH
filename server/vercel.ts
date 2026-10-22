@@ -5,6 +5,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createApp } from './app.ts';
 import { createContext } from './context.ts';
+import { parseServiceAccount } from './firebase.ts';
 
 // A stray background error must never take the whole function down.
 process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
@@ -33,12 +34,9 @@ async function health(res: ServerResponse) {
   let key = 'missing';
   if (has('FIREBASE_SERVICE_ACCOUNT')) {
     try {
-      let raw = process.env.FIREBASE_SERVICE_ACCOUNT!.trim();
-      if (!raw.startsWith('{')) raw = Buffer.from(raw, 'base64').toString('utf8');
-      const j = JSON.parse(raw) as { project_id?: string; client_email?: string; private_key?: string };
-      key = j.private_key && j.client_email ? `ok (project ${j.project_id})` : 'JSON is missing private_key or client_email';
-    } catch {
-      key = 'not valid JSON — paste the whole key file';
+      key = `ok (project ${parseServiceAccount(process.env.FIREBASE_SERVICE_ACCOUNT!).projectId})`;
+    } catch (e) {
+      key = (e as Error).message;
     }
   }
   let firestore = 'not checked';

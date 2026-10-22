@@ -38,8 +38,34 @@ function serviceAccount(cfg: Config['firebase']): ServiceAccount | null {
     raw = fs.readFileSync(cfg.serviceAccountFile, 'utf8');
   }
   if (!raw) return null;
-  if (!raw.trimStart().startsWith('{')) raw = Buffer.from(raw, 'base64').toString('utf8');
-  const j = JSON.parse(raw) as { project_id: string; client_email: string; private_key: string };
+  return parseServiceAccount(raw);
+}
+
+/**
+ * The key as pasted into a hosting dashboard: the whole JSON file or its base64,
+ * forgiving the usual paste slips (surrounding quotes, a leading "NAME=").
+ * Errors describe the problem but never echo any of the value.
+ */
+export function parseServiceAccount(pasted: string): ServiceAccount {
+  let raw = pasted.trim().replace(/^FIREBASE_SERVICE_ACCOUNT\s*=\s*/, '').trim();
+  if (/^(['"]).*\1$/s.test(raw)) raw = raw.slice(1, -1).trim();
+  if (raw.includes('BEGIN PRIVATE KEY') && !raw.includes('client_email')) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT holds only the private key; paste the whole key file (it starts with {"type": "service_account").');
+  }
+  if (!raw.startsWith('{')) {
+    if (!/^[A-Za-z0-9+/=\s]+$/.test(raw)) throw new Error('FIREBASE_SERVICE_ACCOUNT is neither the key file (starting with {) nor its base64 copy; paste the whole key file.');
+    raw = Buffer.from(raw.replace(/\s/g, ''), 'base64').toString('utf8').trim();
+    if (!raw.startsWith('{')) throw new Error('FIREBASE_SERVICE_ACCOUNT looks like base64 but isn\'t the key file; paste the whole key file instead.');
+  }
+  let j: { type?: string; project_id?: string; client_email?: string; private_key?: string };
+  try {
+    j = JSON.parse(raw) as typeof j;
+  } catch {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT starts like the key file but is cut off or changed; copy the whole file again, from the first { to the last }.');
+  }
+  if (j.type !== 'service_account' || !j.client_email || !j.private_key?.includes('PRIVATE KEY')) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT is JSON but not a service-account key; use the file from Firebase → Project settings → Service accounts.');
+  }
   return { projectId: j.project_id, clientEmail: j.client_email, privateKey: j.private_key };
 }
 
