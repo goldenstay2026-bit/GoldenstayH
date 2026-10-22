@@ -79,6 +79,8 @@ module.exports = async function handler(req, res) {
 };
 `,
 );
+// index.js is CommonJS whatever the project's package.json says; server.mjs is ESM by its extension.
+fs.writeFileSync(path.join(func, 'package.json'), JSON.stringify({ type: 'commonjs' }));
 fs.writeFileSync(
   path.join(func, '.vc-config.json'),
   JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.js', launcherType: 'Nodejs', shouldAddHelpers: false, maxDuration: 30 }, null, 2),
