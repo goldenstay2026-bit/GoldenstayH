@@ -4,3 +4,5 @@ Disallow: /admin/
 Disallow: /booking/
 Disallow: /account/
 Disallow: /confirm/
+
+Sitemap: https://www.goldenstay.space/sitemap.xml

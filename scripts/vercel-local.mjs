@@ -27,6 +27,7 @@ http
       if (r.handle === 'filesystem') break;
       const m = new RegExp(r.src).exec(url.pathname);
       if (!m) continue;
+      if (r.has?.some((c) => c.type === 'host' && c.value !== String(req.headers.host).replace(/:\d+$/, ''))) continue;
       for (const [k, v] of Object.entries(r.headers ?? {})) res.setHeader(k, v.replace(/\$(\d)/g, (_, i) => m[i] ?? ''));
       if (r.status) {
         res.statusCode = r.status;

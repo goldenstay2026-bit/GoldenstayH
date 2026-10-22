@@ -1,5 +1,6 @@
 // Server configuration, read from environment variables (see .env.example).
 import crypto from 'node:crypto';
+import { siteOrigin } from '../shared/domain.ts';
 // Secrets live ONLY here — nothing in this file is sent to the browser except
 // the fields explicitly copied into PublicConfig by the API.
 
@@ -8,7 +9,7 @@ export type PhonePeEnv = 'sandbox' | 'production';
 export type Config = {
   nodeEnv: string;
   port: number;
-  /** Public origin of the site, e.g. https://goldenstay.in — used for PhonePe redirect URLs. */
+  /** Public origin of the site, e.g. https://www.goldenstay.space — owner email links, PhonePe return URL. */
   siteUrl: string;
   trustProxy: boolean;
   holdMinutes: number;
@@ -76,11 +77,15 @@ export function loadConfig(): Config {
     console.warn('[config] PHONEPE_ENABLED=true but credentials are incomplete — gateway stays OFF.');
   }
 
-  // On Vercel, fall back to the project's production domain when SITE_URL isn't set.
-  const vercelUrl = env('VERCEL_PROJECT_PRODUCTION_URL') ? `https://${env('VERCEL_PROJECT_PRODUCTION_URL')}` : '';
-  const siteUrl = env('SITE_URL', vercelUrl || `http://localhost:${env('PORT', '8787')}`).replace(/\/$/, '');
-  if (nodeEnv === 'production' && !siteUrl.startsWith('https://')) {
-    throw new Error('SITE_URL must be an https:// URL in production.');
+  // Owner email links and PhonePe's return URL use the real site address in production
+  // (https://www.goldenstay.space, or SITE_URL when it is an https:// address).
+  const rawSiteUrl = env('SITE_URL');
+  let siteUrl: string;
+  if (nodeEnv === 'production') {
+    siteUrl = siteOrigin(rawSiteUrl);
+    if (rawSiteUrl && siteUrl !== rawSiteUrl.replace(/\/$/, '')) console.warn(`[config] SITE_URL "${rawSiteUrl}" is not an https:// address — using ${siteUrl}.`);
+  } else {
+    siteUrl = (rawSiteUrl || `http://localhost:${env('PORT', '8787')}`).replace(/\/$/, '');
   }
   // Optional: the owner normally signs in with Firebase (ADMIN_EMAILS); this is the backup password.
   const passwordHash = env('ADMIN_PASSWORD_HASH');

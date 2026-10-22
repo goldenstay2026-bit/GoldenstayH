@@ -99,13 +99,13 @@ Never put these in a variable starting with `VITE_`. Those are bundled into the 
 **From a computer (sends a sample enquiry):**
 
 ```bash
-node scripts/send-test-enquiry.mjs https://your-domain.com
+node scripts/send-test-enquiry.mjs https://www.goldenstay.space
 ```
 
 or with curl:
 
 ```bash
-curl -X POST https://your-domain.com/api/enquiry \
+curl -X POST https://www.goldenstay.space/api/enquiry \
   -H "Content-Type: application/json" \
   -d '{"name":"Test Guest","phone":"+91 98765 43210","checkIn":"2026-12-20","checkOut":"2026-12-22","guests":2,"room":"ac-1bhk","message":"Test","website":""}'
 ```

@@ -1,7 +1,7 @@
 // Sends a sample enquiry to the server so you can check Telegram + Google Sheets.
 //
 //   node scripts/send-test-enquiry.mjs                          (local: http://localhost:8787)
-//   node scripts/send-test-enquiry.mjs https://your-domain.com  (live site)
+//   node scripts/send-test-enquiry.mjs https://www.goldenstay.space  (live site)
 
 const base = (process.argv[2] ?? 'http://localhost:8787').replace(/\/$/, '');
 

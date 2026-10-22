@@ -2,10 +2,11 @@ import { defineConfig, type Plugin } from 'vite';
 import { resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import { siteOrigin } from './shared/domain.ts';
 
-// Set SITE_URL (e.g. https://goldenstay.in) at build time so Open Graph,
-// canonical and JSON-LD URLs become absolute. Without it they stay relative.
-const siteUrl = (process.env.SITE_URL ?? '').replace(/\/$/, '');
+// Open Graph, canonical and JSON-LD URLs always use the real site address
+// (https://www.goldenstay.space), or SITE_URL when it is an https:// address.
+const siteUrl = siteOrigin(process.env.SITE_URL);
 
 function siteUrlPlugin(): Plugin {
   return {

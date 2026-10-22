@@ -37,7 +37,7 @@ The repo builds itself for Vercel (`vercel.json` → `npm run vercel-build`, Ver
    | Variable | Value |
    | --- | --- |
    | `NODE_ENV` | `production` |
-   | `SITE_URL` | the site's `https://` address |
+   | `SITE_URL` | `https://www.goldenstay.space` (or leave it out) |
    | `FIREBASE_PROJECT_ID` | `goldenstay-b847e` |
    | `FIREBASE_SERVICE_ACCOUNT` | the whole service-account JSON on one line (secret) |
    | `VITE_FIREBASE_*` (6 values) | from Firebase → Project settings → Your apps (public; needed at build time) |
@@ -50,11 +50,26 @@ The repo builds itself for Vercel (`vercel.json` → `npm run vercel-build`, Ver
 5. **Deploy**, then in Firebase → Authentication → Settings → *Authorized domains* add the Vercel domain (and your own domain).
 6. Check: the Book page shows a price for chosen dates, `/admin/` lets the owner sign in.
 
+### Domain: www.goldenstay.space
+
+The domain is registered at Hostinger. The site's address is **https://www.goldenstay.space**; `goldenstay.space` (no www) redirects to it.
+
+1. Vercel → Project → Settings → **Domains** → add `www.goldenstay.space`, then add `goldenstay.space` and choose *Redirect to www.goldenstay.space*.
+2. Vercel then shows the DNS records to create. In **Hostinger → Domains → goldenstay.space → DNS / Nameservers → DNS records**:
+   - delete the existing `A` record for `@` (it points to Hostinger's parking page) and any `CNAME` for `www`;
+   - add `A` · name `@` · the IP Vercel shows (usually `76.76.21.21`);
+   - add `CNAME` · name `www` · the target Vercel shows (usually `cname.vercel-dns.com`).
+3. Wait until Vercel shows both domains as *Valid* (minutes to a few hours); Vercel issues the HTTPS certificate itself.
+4. Firebase → Authentication → Settings → **Authorized domains** → add `goldenstay.space` and `www.goldenstay.space`.
+5. In Vercel's environment variables set `SITE_URL=https://www.goldenstay.space` (or delete it — that is the default), then redeploy.
+
+Search-engine tags (canonical, Open Graph, business details) and `sitemap.xml` always use this address (`shared/domain.ts`).
+
 On Vercel there is no always-on timer: unpaid holds are released whenever availability is next checked, owner emails and Sheet rows are sent before the function finishes (`waitUntil`), and the admin refreshes by checking for changes every 10 seconds.
 
 **Self-hosting instead** (any Node host): set the same variables (or `FIREBASE_SERVICE_ACCOUNT_FILE` = path to the JSON), then `npm ci && npm run build && npm start` behind HTTPS with `TRUST_PROXY=true`.
 
-Admin: `https://your-domain/admin/` (owner signs in with Firebase; `ADMIN_EMAILS`). `/admin/`, `/booking/`, `/account/` and `/confirm/` are `noindex`.
+Admin: `https://www.goldenstay.space/admin/` (owner signs in with Firebase; `ADMIN_EMAILS`). `/admin/`, `/booking/`, `/account/` and `/confirm/` are `noindex`.
 
 ## Firestore usage and backups
 
@@ -91,7 +106,7 @@ Backups: Admin → Bookings → *All* → **CSV** (monthly), plus the Google She
 ## Turning on the PhonePe gateway
 
 1. Get PhonePe PG access (PhonePe Business → Payment Gateway). In the dashboard's Developer Settings note the **Client ID, Client Secret, Client Version**.
-2. Configure the webhook URL `https://your-domain/api/webhooks/phonepe` with a username + password; put the same values in `.env`.
+2. Configure the webhook URL `https://www.goldenstay.space/api/webhooks/phonepe` with a username + password; put the same values in `.env`.
 3. Set `PHONEPE_ENABLED=true`, `PHONEPE_ENV=sandbox`, restart, and run the UAT flow with PhonePe's sandbox (success, failure, pending).
    - **Confirm the webhook header format** with a real sandbox webhook: PhonePe documents `Authorization: SHA256(username:password)` but not the encoding. The server accepts the hex digest (see `verifyWebhookAuth` in `server/phonepe.ts`); adjust there if PhonePe sends something else. Rejected webhooks are logged in the `webhook_events` Firestore collection.
 4. Switch to `PHONEPE_ENV=production` with production credentials.

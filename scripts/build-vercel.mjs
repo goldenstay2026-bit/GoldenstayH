@@ -103,6 +103,8 @@ const pages = ['admin', 'booking', 'account', 'confirm', 'book'];
 const config = {
   version: 3,
   routes: [
+    // goldenstay.space → www.goldenstay.space (one address for visitors and Google).
+    { src: '^/(.*)$', has: [{ type: 'host', value: 'goldenstay.space' }], status: 308, headers: { Location: 'https://www.goldenstay.space/$1' } },
     {
       src: '/(.*)',
       headers: {

@@ -22,7 +22,7 @@ Without this, guests see "Email sign-in isn't enabled yet".
 
 ## 2. Add your website's domain (required before going live)
 
-**Authentication → Settings → Authorized domains → Add domain**: e.g. `goldenstay.in`. `localhost` is already allowed for testing.
+**Authentication → Settings → Authorized domains → Add domain**: add `goldenstay.space` and `www.goldenstay.space` (and the `…vercel.app` address). `localhost` is already allowed for testing.
 
 ## 3. Create the Firestore database (required)
 
@@ -57,7 +57,7 @@ For local development leave both empty: `npm run dev` starts the Firestore emula
 
 ## 6. Recommended hardening
 
-- **Restrict the web API key** to your domains: [Google Cloud console → Credentials](https://console.cloud.google.com/apis/credentials?project=goldenstay-b847e) → the "Browser key" → **Application restrictions: Websites** → add `https://goldenstay.in/*` and `http://localhost:5173/*`. (The key in `.env` is public by design. This just stops other sites from using it.)
+- **Restrict the web API key** to your domains: [Google Cloud console → Credentials](https://console.cloud.google.com/apis/credentials?project=goldenstay-b847e) → the "Browser key" → **Application restrictions: Websites** → add `https://www.goldenstay.space/*`, `https://goldenstay.space/*` and `http://localhost:5173/*`. (The key in `.env` is public by design. This just stops other sites from using it.)
 - **Authentication → Templates**: set the sender name to "Golden Stay" for verification and password-reset emails.
 
 ---
