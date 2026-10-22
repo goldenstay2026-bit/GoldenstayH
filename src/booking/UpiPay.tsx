@@ -1,11 +1,11 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Check, ChevronDown, Copy, Smartphone } from 'lucide-react';
-import QRCode from 'qrcode';
+import { Check, Copy, Download, MessageCircle } from 'lucide-react';
 import { formatPaise } from '../../shared/catalog.ts';
 import type { BookingView, PublicConfig } from '../../shared/types.ts';
 import { normaliseUtr } from '../../shared/validate.ts';
 import { Alert, Field, Panel, Spinner } from '../components/ui';
-import { UPI_APPS, isPhone } from '../lib/upi';
+import { waLink } from '../lib/enquiry';
+import { isPhone } from '../lib/upi';
 
 function CopyBtn({ text, label }: { text: string; label: string }) {
   const [done, setDone] = useState(false);
@@ -22,14 +22,25 @@ function CopyBtn({ text, label }: { text: string; label: string }) {
   );
 }
 
-/** The shop QR, drawn locally as an SVG from its exact contents (scans the same as the printed one). */
-function ShopQr({ value, label }: { value: string; label: string }) {
-  const [svg, setSvg] = useState('');
-  useEffect(() => {
-    QRCode.toString(value, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#171717', light: '#ffffff' } }).then(setSvg, () => setSvg(''));
-  }, [value]);
-  if (!svg) return <div className="grid aspect-square w-full place-items-center rounded-[16px] bg-white"><Spinner /></div>;
-  return <div role="img" aria-label={label} className="aspect-square w-full rounded-[16px] border border-hairline bg-white p-2 [&_svg]:size-full" dangerouslySetInnerHTML={{ __html: svg }} />;
+/** Full-width copy button (phones). */
+function CopyBig({ text, label }: { text: string; label: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => navigator.clipboard?.writeText(text).then(() => (setDone(true), setTimeout(() => setDone(false), 2000)), () => undefined)}
+      className="btn btn-dark h-12 px-3 text-[14px]"
+      aria-label={done ? `${label} copied` : `Copy ${label}`}
+    >
+      {done ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+      {done ? 'Copied' : `Copy ${label}`}
+    </button>
+  );
+}
+
+/** The owner's PhonePe merchant QR, exactly as provided (scaled only). */
+function MerchantQr({ src, label }: { src: string; label: string }) {
+  return <img src={src} alt={label} width={1200} height={1600} className="mx-auto w-full max-w-[250px] rounded-[16px] border border-hairline bg-white" />;
 }
 
 type Props = {
@@ -48,8 +59,7 @@ export function UpiPay({ booking, config, secondary, onPaid }: Props) {
   useEffect(() => setPhone(isPhone()), []);
 
   const amount = formatPaise(booking.payNowPaise);
-  const payload = config.qr.payload;
-  const qrLabel = `UPI QR code to pay ${config.qr.payeeLabel} (UPI ID ${config.qr.upiId})`;
+  const qrLabel = `UPI QR code: PhonePe merchant QR for ${config.qr.payeeLabel} (UPI ID ${config.qr.upiId})`;
   const rupees = (booking.payNowPaise / 100).toFixed(booking.payNowPaise % 100 ? 2 : 0);
 
   const submit = async (e: FormEvent) => {
@@ -70,39 +80,17 @@ export function UpiPay({ booking, config, secondary, onPaid }: Props) {
     }
   };
 
-  const appButtons = (
-    <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
-      {UPI_APPS.map((app) => (
-        <a
-          key={app.id}
-          href={app.link(payload)}
-          className="group flex flex-col items-center gap-2 rounded-[16px] border border-hairline bg-white px-2 py-3.5 text-center transition-colors hover:border-ink"
-        >
-          <span
-            className="grid size-11 place-items-center rounded-[12px] text-[15px] font-bold text-white shadow-sm"
-            style={{ background: app.color }}
-            aria-hidden="true"
-          >
-            {app.name[0]}
-          </span>
-          <span className="text-[13px] font-semibold leading-tight">{app.name}</span>
-          <span className="sr-only"> — pay {config.qr.payeeLabel}</span>
-        </a>
-      ))}
-    </div>
-  );
-
-  const steps = (first: string) => (
+  const steps = (first: string, second: string) => (
     <ol className="space-y-1.5 text-[13.5px] leading-[1.55]">
       <li>
         <span className="font-semibold">1.</span> {first}
       </li>
       <li>
-        <span className="font-semibold">2.</span> Enter <strong className="tabular-nums">{amount}</strong> and pay. Add <strong>{booking.ref}</strong> as the note if
-        your app allows.
+        <span className="font-semibold">2.</span> {second}
       </li>
       <li>
-        <span className="font-semibold">3.</span> Come back here and tap <strong>I’ve paid</strong>.
+        <span className="font-semibold">3.</span> Enter <strong className="tabular-nums">{amount}</strong> and pay. Add <strong>{booking.ref}</strong> as the note
+        if your app allows. Then come back here and tap <strong>I’ve paid</strong>.
       </li>
     </ol>
   );
@@ -128,37 +116,29 @@ export function UpiPay({ booking, config, secondary, onPaid }: Props) {
         </div>
       </div>
 
+      {/* Paying inside the UPI app (scan or UPI ID) is an ordinary payment. Links that open the app
+          from a website with a shop UPI ID get flagged as risky, so there are none. */}
       {phone ? (
-        <>
-          <p className="mt-5 flex items-center gap-2 text-[13.5px] font-semibold">
-            <Smartphone size={16} aria-hidden="true" /> Open your UPI app
-          </p>
-          <div className="mt-3">{appButtons}</div>
-          <div className="mt-4">{steps('Tap your UPI app above — Golden Stay is already chosen.')}</div>
-          <details className="mt-4 rounded-[14px] border border-hairline bg-white p-3 text-[13px]">
-            <summary className="flex cursor-pointer items-center justify-between font-semibold">
-              App didn’t open? Use the QR <ChevronDown size={16} aria-hidden="true" />
-            </summary>
-            <div className="mx-auto mt-3 max-w-[240px]">
-              <ShopQr value={payload} label={qrLabel} />
-            </div>
-            <p className="mt-3 text-center text-muted">
-              Scan it from another phone, or{' '}
-              <a href={config.qr.imageUrl} download="golden-stay-upi-qr.jpg" className="font-semibold text-ink underline underline-offset-2">
-                save the QR
-              </a>{' '}
-              and pick it from your gallery in the UPI app’s scanner.
-            </p>
-          </details>
-        </>
-      ) : (
-        <div className="mt-5 grid items-center gap-5 md:grid-cols-[220px_minmax(0,1fr)]">
-          <div className="mx-auto w-full max-w-[220px]">
-            <ShopQr value={payload} label={qrLabel} />
+        <div className="mt-5">
+          <MerchantQr src={config.qr.imageUrl} label={qrLabel} />
+          <div className="mt-4 grid grid-cols-2 gap-2.5">
+            <a href={config.qr.imageUrl} download="golden-stay-upi-qr.jpg" className="btn h-12 border border-ink/80 bg-white px-3 text-[14px]">
+              <Download size={16} aria-hidden="true" /> Save QR
+            </a>
+            <CopyBig text={config.qr.upiId} label="UPI ID" />
           </div>
+          <div className="mt-4">
+            {steps(
+              'Take a screenshot of the QR (or tap Save QR), or copy the UPI ID.',
+              'Open PhonePe, Google Pay or Paytm → Scan → choose the QR from your gallery. Or use “Pay to UPI ID” and paste the ID.',
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="mt-5 grid items-center gap-5 md:grid-cols-[250px_minmax(0,1fr)]">
+          <MerchantQr src={config.qr.imageUrl} label={qrLabel} />
           <div>
-            {steps('Scan the QR with PhonePe, Google Pay, Paytm or any UPI app.')}
-            <p className="mt-3 text-[12.5px] text-muted">On your phone? Open this page there to get one-tap buttons for your UPI app.</p>
+            {steps('Open PhonePe, Google Pay, Paytm or any UPI app on your phone.', 'Tap Scan and scan this QR — or use “Pay to UPI ID” with the ID above.')}
           </div>
         </div>
       )}
@@ -205,6 +185,19 @@ export function UpiPay({ booking, config, secondary, onPaid }: Props) {
           </div>
         )}
       </form>
+
+      <p className="mt-4 text-center text-[13px] text-muted">
+        Payment not going through?{' '}
+        <a
+          href={waLink(`Hello Golden Stay, I need help paying for booking ${booking.ref} (${amount}).`)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 font-semibold text-ink underline underline-offset-2"
+        >
+          <MessageCircle size={14} aria-hidden="true" /> WhatsApp us
+        </a>{' '}
+        with your booking ID and we’ll help you complete it.
+      </p>
     </Panel>
   );
 }
