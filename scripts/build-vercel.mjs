@@ -26,8 +26,10 @@ fs.mkdirSync(func, { recursive: true });
 // 1. Website → static/
 fs.cpSync(path.join(root, 'dist'), path.join(out, 'static'), { recursive: true });
 
-// 2. Server → one ESM file; npm packages stay external and are copied below.
-const entry = path.join(func, 'index.mjs');
+// 2. Server → one ESM file (server.mjs); npm packages stay external and are copied below.
+//    index.js is a tiny CommonJS entry that loads it: any Vercel Node launcher can start it,
+//    and if the server fails to load, it answers with the error instead of crashing.
+const entry = path.join(func, 'server.mjs');
 await build({
   entryPoints: [path.join(root, 'server', 'vercel.ts')],
   outfile: entry,
@@ -56,10 +58,30 @@ for (const rel of fileList) {
   copied++;
 }
 for (const w of warnings) if (!/Failed to resolve dependency|Failed to parse/.test(String(w))) console.warn('[nft]', String(w).slice(0, 200));
-fs.writeFileSync(path.join(func, 'package.json'), JSON.stringify({ type: 'module' }));
+fs.writeFileSync(
+  path.join(func, 'index.js'),
+  `// Entry point (CommonJS). Loads the bundled server once per instance.
+let server = null;
+module.exports = async function handler(req, res) {
+  try {
+    server = server || import('./server.mjs');
+    const mod = await server;
+    return await mod.default(req, res);
+  } catch (e) {
+    server = null;
+    console.error('[startup] the booking server failed to load:', e);
+    if (res.headersSent) return res.end();
+    res.statusCode = 500;
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(JSON.stringify({ error: 'The booking server failed to start.', code: 'SERVER_START', detail: String((e && e.message) || e).slice(0, 400) }));
+  }
+};
+`,
+);
 fs.writeFileSync(
   path.join(func, '.vc-config.json'),
-  JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.mjs', launcherType: 'Nodejs', shouldAddHelpers: false, supportsResponseStreaming: true, maxDuration: 30 }, null, 2),
+  JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.js', launcherType: 'Nodejs', shouldAddHelpers: false, maxDuration: 30 }, null, 2),
 );
 
 // 4. Routing + headers (the same headers the Express server sends when self-hosted).
