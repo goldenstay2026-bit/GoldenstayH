@@ -23,7 +23,7 @@ npm run admin:hash   # create the backup admin password hash
 npm run images       # regenerate WebP 400/800/1600w from public/images/*
 ```
 
-Requires **Node.js 22.13+**. The tests and `npm run dev` start the Firestore emulator, which needs **Java 11+** installed.
+Requires **Node.js 24+**. The tests and `npm run dev` start the Firestore emulator, which needs **Java 11+** installed.
 
 ## Deploying on Vercel
 

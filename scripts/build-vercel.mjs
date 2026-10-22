@@ -36,7 +36,7 @@ await build({
   bundle: true,
   platform: 'node',
   format: 'esm',
-  target: 'node22',
+  target: 'node24',
   packages: 'external',
   sourcemap: 'inline',
   logLevel: 'warning',
@@ -83,7 +83,7 @@ module.exports = async function handler(req, res) {
 fs.writeFileSync(path.join(func, 'package.json'), JSON.stringify({ type: 'commonjs' }));
 fs.writeFileSync(
   path.join(func, '.vc-config.json'),
-  JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.js', launcherType: 'Nodejs', shouldAddHelpers: false, maxDuration: 30 }, null, 2),
+  JSON.stringify({ runtime: 'nodejs24.x', handler: 'index.js', launcherType: 'Nodejs', shouldAddHelpers: false, maxDuration: 30 }, null, 2),
 );
 
 // 4. Routing + headers (the same headers the Express server sends when self-hosted).
