@@ -6,6 +6,19 @@
 
 @import 'tailwindcss';
 
+/* Wordmark: Cinzel (classic Roman capitals). Declared by hand — one weight,
+   latin only — with font-display: block so the name never flashes in a
+   fallback face. */
+@font-face {
+  font-family: 'Cinzel';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src:
+    url('../node_modules/@fontsource/cinzel/files/cinzel-latin-600-normal.woff2') format('woff2'),
+    url('../node_modules/@fontsource/cinzel/files/cinzel-latin-600-normal.woff') format('woff');
+}
+
 @theme {
   --color-taupe: #706356;
   --color-cream: #f5f2ef;
@@ -19,6 +32,7 @@
 
   --font-sans: 'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
   --font-serif: 'Instrument Serif', Georgia, serif;
+  --font-brand: 'Cinzel', 'Trajan Pro', Georgia, serif;
 
   /* Breakpoints: ≤640 mobile · 641–1100 tablet · >1100 desktop */
   --breakpoint-*: initial;
@@ -139,10 +153,10 @@
   }
 
   .wordmark {
-    font-family: var(--font-sans);
+    font-family: var(--font-brand);
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.1em;
     line-height: 1;
     white-space: nowrap;
   }

@@ -5,12 +5,12 @@ import { TABS, useRouter } from '../lib/router';
 
 const logoSrc = `${import.meta.env.BASE_URL}images/opt/logo-96.webp`;
 
-/** Wordmark: the name in the sans, capitals, lightly tracked. */
+/** Wordmark: the name in Cinzel capitals, lightly tracked. */
 export function Brand({ size = 'nav' }: { size?: 'nav' | 'footer' }) {
   return (
     <span className="flex items-center gap-2.5">
       {size === 'nav' && <img src={logoSrc} alt="" width={40} height={40} className="size-9 rounded-full lg:size-10" />}
-      <span className={`wordmark text-ink ${size === 'nav' ? 'text-[17px] lg:text-[19px]' : 'text-[18px]'}`}>{business.name}</span>
+      <span className={`wordmark text-ink ${size === 'nav' ? 'text-[18px] lg:text-[21px]' : 'text-[20px]'}`}>{business.name}</span>
     </span>
   );
 }
