@@ -39,7 +39,9 @@ export async function api<T>(path: string, { method = 'GET', body, token, idToke
   // Cancelled while the body was downloading: don't hand back an empty object as data.
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   // No JSON at all = the booking server isn't there (e.g. a static-only host): say so plainly.
-  if (!isJson) {
+  // A server that failed to start (missing settings) is the same thing to a guest;
+  // the owner sees the reason at /api/health.
+  if (!isJson || (json as Partial<ApiErrorBody>).code === 'SERVER_CONFIG') {
     throw new ApiError(res.status || 503, {
       error: 'Online booking isn’t available right now. Please enquire on WhatsApp or call +91 91010 87949.',
       code: 'API_UNAVAILABLE',
