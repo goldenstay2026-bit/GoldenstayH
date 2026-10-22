@@ -3,7 +3,6 @@ import { About } from './components/About';
 import { Amenities, HighlightsStrip } from './components/Amenities';
 import { AroundUs } from './components/AroundUs';
 import { Contact } from './components/Contact';
-import { CoupleNote } from './components/CoupleNote';
 import { EntireHomestayBlock } from './components/EntireHomestayBlock';
 import { Footer } from './components/Footer';
 import { Gallery } from './components/Gallery';
@@ -51,16 +50,8 @@ function Panels() {
       <Panel id="home">
         <Hero />
         <HighlightsStrip />
-        <div className="container-x mt-5 flex justify-center">
-          <CoupleNote className="rounded-full bg-card px-4 py-2" />
-        </div>
-        <EntireHomestayBlock />
-        <div className="container-x mt-8 flex justify-center">
-          <a href="#rooms" className="btn btn-dark h-12 px-7 text-[15px]">
-            View Rooms
-          </a>
-        </div>
         <About />
+        <EntireHomestayBlock />
       </Panel>
       <Panel id="rooms">
         <Rooms />

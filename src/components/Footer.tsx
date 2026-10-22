@@ -21,7 +21,7 @@ export function Footer() {
   const [year, setYear] = useState(__BUILD_YEAR__);
   useEffect(() => setYear(new Date().getFullYear()), []);
   return (
-    <footer className="no-print mt-16 border-t border-hairline md:mt-24">
+    <footer className="no-print mt-12 border-t border-hairline md:mt-16">
       <div className="container-x flex flex-col items-center gap-4 pt-8 text-center lg:flex-row lg:justify-between lg:text-left">
         <a href="#home" aria-label="Golden Stay — home" className="rounded">
           <Brand size="footer" />
@@ -48,8 +48,8 @@ export function Footer() {
           </a>
         </p>
       </div>
-      <nav aria-label="Policies" className="container-x mt-5 border-t border-hairline pb-28 pt-4 md:pb-8">
-        <ul className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-[12.5px] text-muted lg:justify-start">
+      <nav aria-label="Policies" className="container-x mt-5 pb-28 md:pb-8">
+        <ul className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 border-t border-hairline pt-4 text-[12.5px] text-muted lg:justify-start">
           <li className="font-semibold text-ink">Policies</li>
           {policyLinks.map((l) => (
             <li key={l.href}>

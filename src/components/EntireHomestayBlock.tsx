@@ -2,6 +2,7 @@ import { Phone } from 'lucide-react';
 import { business, groupBooking } from '../data/site';
 import { waLink } from '../lib/enquiry';
 import { H2 } from './Heading';
+import { Img } from './Img';
 import { WhatsAppIcon } from './icons';
 
 const GROUP_WHATSAPP_TEXT = [
@@ -22,7 +23,7 @@ export function EntireHomestayBlock() {
   if (!groupBooking.entireHomestay) return null;
   return (
     <section aria-labelledby="entire-title" className="section container-x">
-      <div className="on-dark rounded-[22px] bg-ink p-6 text-white md:p-10">
+      <div className="on-dark grid gap-6 rounded-[22px] bg-ink p-6 text-white md:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] md:items-center md:gap-10 md:p-10 lg:p-12">
         <div className="max-w-[720px]">
           <H2 id="entire-title" before="Book the" accent="entire homestay" className="text-white" />
           <p className="mt-4 text-[14.5px] leading-[1.65] text-white/80 md:text-[15.5px]">
@@ -47,6 +48,14 @@ export function EntireHomestayBlock() {
               Parties and events need prior approval from Golden Stay. Please share the date, number of guests and occasion.
             </p>
           )}
+        </div>
+        <div className="relative hidden overflow-hidden rounded-[16px] md:block md:min-h-[300px] md:self-stretch">
+          <Img
+            name="common-living-03"
+            alt="Living area with a coffee table, wall-mounted TV and doors to the rooms"
+            sizes="(min-width: 641px) 45vw, 100vw"
+            className="absolute inset-0 size-full object-cover"
+          />
         </div>
       </div>
     </section>

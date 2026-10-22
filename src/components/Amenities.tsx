@@ -1,5 +1,6 @@
 import { Bath, BedDouble, ChefHat, Snowflake, Sofa, Users, type LucideIcon } from 'lucide-react';
 import { amenities, type AmenityIcon } from '../data/site';
+import { CoupleNote } from './CoupleNote';
 import { SectionHead } from './Heading';
 
 const ICONS: Record<AmenityIcon, LucideIcon> = {
@@ -39,11 +40,12 @@ export function HighlightsStrip() {
   return (
     <section aria-label="Highlights" className="container-x mt-[18px] md:mt-6">
       <AmenityPills only={HIGHLIGHTS} />
-      <p className="mt-3 text-center text-[12.5px]">
-        <a href="#amenities" className="link-underline font-semibold">
+      <div className="mt-3 flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
+        <CoupleNote className="rounded-full bg-card px-4 py-2" />
+        <a href="#amenities" className="link-underline text-[12.5px] font-semibold">
           See all amenities
         </a>
-      </p>
+      </div>
     </section>
   );
 }

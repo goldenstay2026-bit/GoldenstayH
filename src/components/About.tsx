@@ -34,10 +34,15 @@ export function About() {
               </div>
             ))}
           </dl>
-          <a href="#contact" className="btn btn-dark mt-7 h-11 w-fit px-5 text-[14px]">
-            <Phone size={15} aria-hidden="true" />
-            Contact Us
-          </a>
+          <div className="mt-7 flex flex-wrap gap-2.5">
+            <a href="#rooms" className="btn btn-dark h-11 px-5 text-[14px]">
+              View Rooms
+            </a>
+            <a href="#contact" className="btn h-11 border border-ink/80 px-5 text-[14px] hover:bg-ink hover:text-white">
+              <Phone size={15} aria-hidden="true" />
+              Contact Us
+            </a>
+          </div>
         </div>
       </div>
     </section>
