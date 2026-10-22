@@ -5,11 +5,15 @@ import { TABS, useRouter } from '../lib/router';
 
 const logoSrc = `${import.meta.env.BASE_URL}images/opt/logo-96.webp`;
 
+/** Wordmark: "Golden" in the sans, "Stay" in the serif italic — the same pairing as the headings. */
 export function Brand({ size = 'nav' }: { size?: 'nav' | 'footer' }) {
+  const [first, ...rest] = business.name.split(' ');
   return (
     <span className="flex items-center gap-2.5">
       {size === 'nav' && <img src={logoSrc} alt="" width={40} height={40} className="size-9 rounded-full lg:size-10" />}
-      <span className={`wordmark text-ink ${size === 'nav' ? 'text-[22px] lg:text-[25px]' : 'text-[24px]'}`}>{business.name}</span>
+      <span className={`wordmark text-ink ${size === 'nav' ? 'text-[21px] lg:text-[23px]' : 'text-[22px]'}`}>
+        {first} <span className="wordmark-accent">{rest.join(' ')}</span>
+      </span>
     </span>
   );
 }

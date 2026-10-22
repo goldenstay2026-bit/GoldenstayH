@@ -6,18 +6,6 @@
 
 @import 'tailwindcss';
 
-/* Wordmark: declared by hand so it can use font-display: block — the Gothic
-   wordmark should never flash in a fallback face. */
-@font-face {
-  font-family: 'UnifrakturCook';
-  font-style: normal;
-  font-weight: 700;
-  font-display: block;
-  src:
-    url('../node_modules/@fontsource/unifrakturcook/files/unifrakturcook-latin-700-normal.woff2') format('woff2'),
-    url('../node_modules/@fontsource/unifrakturcook/files/unifrakturcook-latin-700-normal.woff') format('woff');
-}
-
 @theme {
   --color-taupe: #706356;
   --color-cream: #f5f2ef;
@@ -31,7 +19,6 @@
 
   --font-sans: 'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
   --font-serif: 'Instrument Serif', Georgia, serif;
-  --font-gothic: 'UnifrakturCook', 'Old English Text MT', serif;
 
   /* Breakpoints: ≤640 mobile · 641–1100 tablet · >1100 desktop */
   --breakpoint-*: initial;
@@ -152,10 +139,18 @@
   }
 
   .wordmark {
-    font-family: var(--font-gothic);
-    font-weight: 700;
-    letter-spacing: 0;
+    font-family: var(--font-sans);
+    font-weight: 600;
+    letter-spacing: -0.035em;
     line-height: 1;
+    white-space: nowrap;
+  }
+  .wordmark-accent {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 1.14em;
+    letter-spacing: -0.01em;
   }
 
   .field {
