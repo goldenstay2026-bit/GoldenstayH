@@ -7,6 +7,16 @@ before(async () => (h = await startHarness()));
 after(() => h.close());
 
 describe('QR payment (Method B)', () => {
+  test('the transaction reference (UTR) is required', async () => {
+    const b = await h.book({ checkIn: '2026-10-27', checkOut: '2026-10-28' });
+    for (const body of [{}, { utr: '' }, { utr: '   ' }]) {
+      const r = await h.api('POST', `/api/bookings/${b.json.booking.ref}/pay/qr`, body, h.guest(b.json.token));
+      assert.equal(r.status, 400, JSON.stringify(body));
+      assert.equal(r.json.code, 'UTR_REQUIRED');
+    }
+    assert.equal((await h.paymentsOf(b.json.booking.ref)).filter((p) => p.method === 'qr').length, 0, 'nothing recorded');
+  });
+
   test('invalid transaction references are rejected', async () => {
     const b = await h.book({ checkIn: '2026-10-25', checkOut: '2026-10-26' });
     for (const utr of ['12345', 'ABCDEFGHIJKL', '1234567890123', 'T2410112233445566']) {

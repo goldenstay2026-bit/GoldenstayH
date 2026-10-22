@@ -11,7 +11,10 @@ beforeEach(() => (h.notify!.emails.length = 0));
 const verifyEmails = () => h.notify!.emails.filter((e) => String(e.subject).startsWith('💳'));
 const tokenFrom = (html: string) => decodeURIComponent(/\/confirm\/\?t=([^"&]+)/.exec(html)![1]);
 
-async function paid(over: Record<string, unknown>, utr = '') {
+// Each booking needs its own UTR (a reference can't be reused across bookings).
+const freshUtr = () => String(100_000_000_000 + Math.floor(Math.random() * 899_999_999_999));
+
+async function paid(over: Record<string, unknown>, utr = freshUtr()) {
   const b = await h.book(over);
   const r = await h.api('POST', `/api/bookings/${b.json.booking.ref}/pay/qr`, { utr }, h.guest(b.json.token));
   assert.equal(r.status, 200, JSON.stringify(r.json));
@@ -22,13 +25,13 @@ async function paid(over: Record<string, unknown>, utr = '') {
 }
 
 describe('"I have paid" → owner email with Review & confirm link', () => {
-  test('UTR is optional; the owner gets a verify email with the amount and a link', async () => {
-    const { ref } = await paid({ roomId: 'nonac-1bhk', checkIn: '2026-11-20', checkOut: '2026-11-22' });
+  test('the owner gets a verify email with the amount, the UTR and a link', async () => {
+    const { ref } = await paid({ roomId: 'nonac-1bhk', checkIn: '2026-11-20', checkOut: '2026-11-22' }, '412398765432');
     const mails = verifyEmails();
     assert.equal(mails.length, 1);
     assert.equal(mails[0].subject, `💳 Payment to verify – ${ref} · ₹2,598 · Riya Sharma`);
     assert.match(mails[0].html, /Review &amp; confirm booking/);
-    assert.match(mails[0].html, /Not given/);
+    assert.match(mails[0].html, /412398765432/);
     assert.match(mails[0].html, /https:\/\/goldenstay\.test\/confirm\/\?t=/);
   });
 

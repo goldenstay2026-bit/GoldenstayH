@@ -233,24 +233,25 @@ export async function startGatewayPayment(ctx: Ctx, booking: BookingRow, guestTo
  * becomes "pending verification" and the owner is emailed a confirm link.
  */
 export async function submitQrPayment(ctx: Ctx, booking: BookingRow, utrRaw: unknown) {
+  // The UTR is required: the guest types the amount themselves, so it is what
+  // lets the owner match the payment to this booking.
   const given = String(utrRaw ?? '').trim();
-  const utr = given ? normaliseUtr(given) : null;
-  if (given && !utr) throw new HttpError(400, 'That doesn’t look like a UPI reference. It should be 12 digits — or leave it empty.', 'INVALID_UTR', 'utr');
+  if (!given) throw new HttpError(400, 'Enter the 12-digit UPI reference (UTR) from your payment receipt.', 'UTR_REQUIRED', 'utr');
+  const utr = normaliseUtr(given);
+  if (!utr) throw new HttpError(400, 'That doesn’t look like a UPI reference. It should be 12 digits.', 'INVALID_UTR', 'utr');
 
   return ctx.db.tx(async () => {
     const b = (await getBookingById(ctx, booking.id))!;
     if (b.status === 'confirmed') throw new HttpError(409, 'This booking is already confirmed.', 'ALREADY_CONFIRMED');
     if (b.status === 'cancelled') throw new HttpError(409, 'This booking was cancelled. Please contact us.', 'NOT_PAYABLE');
 
-    if (utr) {
-      const clash = (await ctx.db.query<PaymentRow>('payments', { where: [['utr', '==', utr]] })).some((p) => p.state !== 'rejected' && p.booking_id !== b.id);
-      if (clash) throw new HttpError(409, 'This transaction reference has already been used for another booking.', 'UTR_USED', 'utr');
-    }
+    const clash = (await ctx.db.query<PaymentRow>('payments', { where: [['utr', '==', utr]] })).some((p) => p.state !== 'rejected' && p.booking_id !== b.id);
+    if (clash) throw new HttpError(409, 'This transaction reference has already been used for another booking.', 'UTR_USED', 'utr');
 
     const existing = (await paymentsFor(ctx, b.id)).find((p) => p.method === 'qr' && p.state === 'submitted');
     const now = iso(ctx);
     if (existing) {
-      if (utr) await setPayment(ctx, existing.id, { utr });
+      await setPayment(ctx, existing.id, { utr });
       await audit(ctx, 'guest', 'payment.qr_reference_updated', b.id, { paymentId: existing.id, utr });
     } else {
       const paymentId = Number(await ctx.db.insert('payments', newPaymentRow(b, 'qr', 'submitted', now, { utr })));

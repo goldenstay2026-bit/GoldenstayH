@@ -3,7 +3,7 @@ import { Check, Copy, Download, MessageCircle } from 'lucide-react';
 import { formatPaise } from '../../shared/catalog.ts';
 import type { BookingView, PublicConfig } from '../../shared/types.ts';
 import { normaliseUtr } from '../../shared/validate.ts';
-import { Alert, Field, Panel, Spinner } from '../components/ui';
+import { Field, Panel, Spinner } from '../components/ui';
 import { waLink } from '../lib/enquiry';
 import { isPhone } from '../lib/upi';
 
@@ -47,7 +47,7 @@ type Props = {
   booking: BookingView;
   config: PublicConfig;
   secondary: boolean;
-  /** Submits "I've paid" (UTR optional). */
+  /** Submits "I've paid" with the UTR (required). */
   onPaid: (utr: string) => Promise<void>;
 };
 
@@ -65,8 +65,8 @@ export function UpiPay({ booking, config, secondary, onPaid }: Props) {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
-    if (utr.trim() && !normaliseUtr(utr)) {
-      setError('That doesn’t look like a UPI reference — it’s 12 digits. You can also leave it empty.');
+    if (!utr.trim() || !normaliseUtr(utr)) {
+      setError(utr.trim() ? 'That doesn’t look like a UPI reference — it’s 12 digits.' : 'Enter the 12-digit UPI reference (UTR) from your payment receipt.');
       document.getElementById('qr-utr')?.focus();
       return;
     }
@@ -149,15 +149,16 @@ export function UpiPay({ booking, config, secondary, onPaid }: Props) {
           <Field
             id="qr-utr"
             label="UPI reference (UTR)"
-            optional
             error={error}
-            hint="12 digits from your payment receipt — helps us confirm faster."
+            hint="12 digits, in your UPI app’s payment details (called UPI Ref No., UTR or Transaction ID)."
           >
             <input
               id="qr-utr"
               className="field tabular-nums"
               inputMode="numeric"
               autoComplete="off"
+              required
+              aria-required="true"
               placeholder="e.g. 412345678901"
               maxLength={16}
               value={utr}
@@ -177,13 +178,6 @@ export function UpiPay({ booking, config, secondary, onPaid }: Props) {
           )}
         </button>
         <p className="mt-2.5 text-center text-[11.5px] text-muted">Golden Stay checks the payment and confirms your booking — you’ll see it here.</p>
-        {error && !utr && (
-          <div className="mt-3">
-            <Alert tone="danger" role="alert">
-              {error}
-            </Alert>
-          </div>
-        )}
       </form>
 
       <p className="mt-4 text-center text-[13px] text-muted">
