@@ -209,4 +209,27 @@ describe('dashboard and guests', () => {
     assert.equal(await audits(b.json.booking.ref, 'email.guest_confirmed_sent'), 0);
     assert.equal(await audits(b.json.booking.ref, 'email.guest_confirmed_failed'), 1);
   });
+
+  test('owner can send the confirmation email again; the answer says what really happened', async () => {
+    const b = await h.book({ roomId: 'nonac-1bhk', checkIn: '2027-06-01', checkOut: '2027-06-02' });
+    const ref = b.json.booking.ref;
+    assert.equal((await admin('POST', `/bookings/${ref}/email-guest`, {})).status, 409, 'not for a pending booking');
+    h.notify!.mode.sheets = 'fail';
+    await admin('POST', `/bookings/${ref}/confirm`, { note: 'Confirmed' });
+    await h.settle();
+    const failed = await admin('POST', `/bookings/${ref}/email-guest`, {});
+    h.notify!.mode.sheets = 'ok';
+    assert.equal(failed.status, 502);
+    assert.equal(failed.json.code, 'EMAIL_FAILED');
+    assert.match(failed.json.error, /not sent/);
+    const before = h.notify!.guestEmails.length;
+    const sent = await admin('POST', `/bookings/${ref}/email-guest`, {});
+    assert.equal(sent.status, 200);
+    assert.equal(sent.json.to, 'riya@example.com');
+    assert.equal(h.notify!.guestEmails.length, before + 1);
+    assert.match(h.notify!.guestEmails.at(-1)!.subject, new RegExp(`${ref}.*|confirmed`));
+    assert.equal(await audits(ref, 'email.guest_confirmed_sent'), 1);
+    assert.equal(await audits(ref, 'email.guest_confirmed_failed'), 2);
+    assert.equal((await h.api('POST', `/api/admin/bookings/${ref}/email-guest`, {})).status, 401, 'owner only');
+  });
 });

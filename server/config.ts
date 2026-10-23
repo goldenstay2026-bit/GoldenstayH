@@ -46,6 +46,11 @@ export type Config = {
     sheetsSecret: string;
     /** Test-only override of https://api.telegram.org; refused in production. */
     telegramApiBase?: string;
+    /**
+     * EmailJS (emailjs.com) for guest emails, called from the server. The
+     * private key is a secret: server settings only, never the website code.
+     */
+    emailjs: { serviceId: string; templateId: string; publicKey: string; privateKey: string; apiUrl: string };
   };
 };
 
@@ -147,6 +152,13 @@ export function loadConfig(): Config {
       telegramChatId: env('TELEGRAM_CHAT_ID'),
       sheetsWebhookUrl: env('SHEETS_WEBHOOK_URL'),
       sheetsSecret: env('SHEETS_SECRET'),
+      emailjs: {
+        serviceId: env('EMAILJS_SERVICE_ID'),
+        templateId: env('EMAILJS_TEMPLATE_ID'),
+        publicKey: env('EMAILJS_PUBLIC_KEY'),
+        privateKey: env('EMAILJS_PRIVATE_KEY'),
+        apiUrl: 'https://api.emailjs.com/api/v1.0/email/send',
+      },
     },
   };
 }

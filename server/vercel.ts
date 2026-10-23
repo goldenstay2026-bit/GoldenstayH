@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createApp } from './app.ts';
 import { createContext } from './context.ts';
 import { parseServiceAccount } from './firebase.ts';
+import { emailJsConfigured } from './notify/emailjs.ts';
 import { guestEmailStatus } from './notify/sheets.ts';
 
 // A stray background error must never take the whole function down.
@@ -37,6 +38,7 @@ async function health(res: ServerResponse) {
     [
       'NODE_ENV', 'SITE_URL', 'FIREBASE_PROJECT_ID', 'FIREBASE_SERVICE_ACCOUNT', 'OWNER_LINK_SECRET', 'ADMIN_EMAILS',
       'ADMIN_PASSWORD_HASH', 'SHEETS_WEBHOOK_URL', 'SHEETS_SECRET', 'TELEGRAM_BOT_TOKEN', 'VITE_FIREBASE_API_KEY',
+      'EMAILJS_SERVICE_ID', 'EMAILJS_TEMPLATE_ID', 'EMAILJS_PUBLIC_KEY', 'EMAILJS_PRIVATE_KEY',
     ].map((k) => [k, has(k)]),
   );
   let key = 'missing';
@@ -57,7 +59,8 @@ async function health(res: ServerResponse) {
     } catch (e) {
       firestore = `error: ${String((e as Error).message).slice(0, 200)}`;
     }
-    guestEmails = await cachedGuestEmailStatus(ctx.config.notify);
+    // EmailJS can't be checked without sending an email, so only its settings are reported.
+    guestEmails = emailJsConfigured(ctx.config.notify.emailjs) ? 'EmailJS set up' : `Apps Script: ${await cachedGuestEmailStatus(ctx.config.notify)}`;
   }
   json(res, startupError ? 500 : 200, {
     ok: !startupError && firestore === 'ok',

@@ -110,10 +110,11 @@ export async function startMockNotify() {
   const emails: Record<string, any>[] = [];
   /** Emails to guests (Apps Script "guest_email"). */
   const guestEmails: Record<string, any>[] = [];
+  const emailjsSends: Record<string, any>[] = [];
   /** Mock "Bookings" tab: latest row per booking ID, plus every upsert received. */
   const bookingRows = new Map<string, Record<string, any>>();
   const upserts: Record<string, any>[] = [];
-  const mode = { telegram: 'ok' as 'ok' | 'fail' | 'reject-links', sheets: 'ok' as 'ok' | 'fail' | 'html' };
+  const mode = { telegram: 'ok' as 'ok' | 'fail' | 'reject-links', sheets: 'ok' as 'ok' | 'fail' | 'html', emailjs: 'ok' as 'ok' | 'fail' };
   const server = http.createServer(async (req, res) => {
     let body = '';
     for await (const c of req) body += c;
@@ -133,6 +134,16 @@ export async function startMockNotify() {
       return json(200, { ok: true, result: { message_id: telegram.length } });
     }
     if (url.pathname.startsWith('/bot')) return json(401, { ok: false, description: 'Unauthorized' });
+    if (req.method === 'POST' && url.pathname === '/emailjs/send') {
+      const j = JSON.parse(body);
+      if (mode.emailjs === 'fail' || j.accessToken !== 'emailjs-private-test-key') {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        return res.end('The template ID is invalid');
+      }
+      emailjsSends.push(j);
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      return res.end('OK');
+    }
     if (req.method === 'POST' && url.pathname === '/macros/s/TEST/exec') {
       if (mode.sheets === 'html') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -161,7 +172,7 @@ export async function startMockNotify() {
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  return { base, telegram, rows, emails, guestEmails, bookingRows, upserts, mode, close: () => new Promise<void>((r) => server.close(() => r())) };
+  return { base, telegram, rows, emails, guestEmails, emailjsSends, bookingRows, upserts, mode, close: () => new Promise<void>((r) => server.close(() => r())) };
 }
 
 export type Harness = Awaited<ReturnType<typeof startHarness>>;
@@ -170,7 +181,10 @@ export type Harness = Awaited<ReturnType<typeof startHarness>>;
 export const idToken = (uid = 'u-riya', email = 'riya@example.com') => `test:${uid}:${email}`;
 export const authAs = (uid?: string, email?: string) => ({ Authorization: `Bearer ${idToken(uid, email)}` });
 
-export async function startHarness(opts: { gateway?: boolean; rateLimits?: boolean; notify?: boolean; firebase?: boolean } = {}) {
+const EMAILJS_PRIVATE = 'emailjs-private-test-key';
+const NO_EMAILJS = { serviceId: '', templateId: '', publicKey: '', privateKey: '', apiUrl: '' };
+
+export async function startHarness(opts: { gateway?: boolean; rateLimits?: boolean; notify?: boolean; firebase?: boolean; emailjs?: boolean } = {}) {
   const clock = { ms: Date.parse('2026-10-11T06:00:00Z') }; // 11 Oct 2026, 11:30 IST
   const mirror: { uid: string; ref: string; data: Record<string, unknown> }[] = [];
   const mock = opts.gateway ? await startMockPhonePe(clock) : null;
@@ -204,8 +218,11 @@ export async function startHarness(opts: { gateway?: boolean; rateLimits?: boole
           sheetsWebhookUrl: `${notify.base}/macros/s/TEST/exec`,
           sheetsSecret: SHEETS_SECRET,
           telegramApiBase: notify.base,
+          emailjs: opts.emailjs
+            ? { serviceId: 'service_test', templateId: 'template_test', publicKey: 'pub_test', privateKey: EMAILJS_PRIVATE, apiUrl: `${notify.base}/emailjs/send` }
+            : NO_EMAILJS,
         }
-      : { telegramBotToken: '', telegramChatId: '', sheetsWebhookUrl: '', sheetsSecret: '' },
+      : { telegramBotToken: '', telegramChatId: '', sheetsWebhookUrl: '', sheetsSecret: '', emailjs: NO_EMAILJS },
   };
   const ctx: Ctx = {
     db: createStore(config.firebase),

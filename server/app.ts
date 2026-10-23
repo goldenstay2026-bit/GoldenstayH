@@ -25,6 +25,7 @@ import { dashboardData, guestDetail, listGuests } from './insights.ts';
 import { addSeasonalPrice, deleteSeasonalPrice, getPropertySettings, listSeasonalPrices, savePropertySettings } from './settings.ts';
 import { ensureSeeded } from './db.ts';
 import { inBackground } from './background.ts';
+import { notifyGuest } from './notify/guestEmail.ts';
 import { isOptionId, optionById } from '../shared/catalog.ts';
 import { addDaysISO, parseISODate, todayInIndia } from '../shared/validate.ts';
 import {
@@ -568,6 +569,17 @@ export function createApp(ctx: Ctx, opts: { staticDir?: string; rateLimits?: boo
   guarded.post('/bookings/:ref/complete', async (req, res) => {
     await adminComplete(ctx, await byRef(req.params.ref), req.body?.note, actor(req));
     res.json({ ok: true });
+  });
+  // Send (again) the guest's "confirmed" / "not accepted" email; answers with what really happened.
+  guarded.post('/bookings/:ref/email-guest', async (req, res) => {
+    const b = await byRef(req.params.ref);
+    const kind = b.status === 'confirmed' || b.status === 'completed' ? 'confirmed' : b.status === 'rejected' ? 'rejected' : null;
+    if (!kind) throw new HttpError(409, 'Only confirmed, completed or rejected bookings have a guest email to send.', 'BAD_STATE');
+    const r = await notifyGuest(ctx, b.id, kind);
+    if (r.status === 'sent') return res.json({ ok: true, to: r.to });
+    if (r.status === 'no_email') throw new HttpError(409, 'This booking has no guest email address — send the details on WhatsApp instead.', 'NO_GUEST_EMAIL');
+    const why = r.status === 'skipped' ? r.reason : r.error;
+    throw new HttpError(502, `The email was not sent: ${why}. If it says “unknown action”, deploy the updated Apps Script (see NOTIFICATIONS_SETUP.md).`, 'EMAIL_FAILED');
   });
   guarded.post('/bookings/:ref/payments', async (req, res) => {
     const id = await adminRecordPayment(ctx, await byRef(req.params.ref), req.body ?? {}, actor(req));

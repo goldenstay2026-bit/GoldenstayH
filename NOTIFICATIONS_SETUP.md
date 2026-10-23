@@ -77,6 +77,21 @@ The confirmation email always goes to **goldenstay2026@gmail.com**. That address
 
 The script now also emails guests about their online booking (confirmed / not accepted). After updating `scripts/google-apps-script.gs`: open the Apps Script editor, replace all the code with the new file, **Save**, then **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy**. The URL stays the same. Until you do this, guest emails are recorded in the booking history as failed — nothing else is affected.
 
+### Guest emails with EmailJS (instead of the Apps Script)
+
+When the four `EMAILJS_*` settings are set, guest emails ("Booking confirmed" / "not accepted") go through [EmailJS](https://www.emailjs.com) from the server; the Apps Script is then only used for the Sheet and owner emails. Free plan: 200 emails a month.
+
+1. Sign up at emailjs.com.
+2. **Email Services → Add New Service → Gmail → Connect Account**, sign in as goldenstay2026@gmail.com and allow sending. Copy the **Service ID**.
+3. **Email Templates → Create New Template**:
+   - **Subject:** `{{subject}}`
+   - **Content:** click the code view (`<>`) and replace everything with `{{{message_html}}}` (three braces).
+   - Right side: **To Email** `{{to_email}}`, **From Name** `Golden Stay`, **Reply To** `{{reply_to}}`.
+   - Save, and copy the **Template ID**.
+4. **Account → General:** copy the **Public Key**. **Account → Security:** turn on **Allow EmailJS API for non-browser applications**, and copy the **Private Key**.
+5. In Vercel → Settings → Environment Variables (Production) add `EMAILJS_SERVICE_ID`, `EMAILJS_TEMPLATE_ID`, `EMAILJS_PUBLIC_KEY`, `EMAILJS_PRIVATE_KEY`, then redeploy. The private key is a secret: only in the server settings, never in the website code.
+6. Check `/api/health` → `"guestEmails": "EmailJS set up"`. Confirm a test booking in the admin: its history says **Guest emailed: confirmed** only if EmailJS accepted it; otherwise **Guest email FAILED** with EmailJS's reason. **Send confirmation email** in the booking sends it again.
+
 ## 4. Add the settings to the server and restart
 
 The four values are **secrets**. They go only in the server's `.env` file (or your hosting provider's "Environment variables" screen), never in website code:

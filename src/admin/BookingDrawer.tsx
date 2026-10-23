@@ -2,7 +2,7 @@
 // WhatsApp confirmation, cancel, and the audit history.
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { MessageCircle, Pencil, Phone, RefreshCw, X } from 'lucide-react';
+import { Mail, MessageCircle, Pencil, Phone, RefreshCw, X } from 'lucide-react';
 import { formatPaise, type OptionId } from '../../shared/catalog.ts';
 import type { BookingStatus, PaymentStatus } from '../../shared/types.ts';
 import { formatISODate } from '../../shared/validate.ts';
@@ -106,6 +106,7 @@ export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClo
   const [error, setError] = useState('');
   const [action, setAction] = useState<Action | null>(null);
   const [busy, setBusy] = useState(false);
+  const [mail, setMail] = useState<{ tone: 'success' | 'danger'; text: string } | null>(null);
   const panel = useRef<HTMLDivElement>(null);
   useModal(panel, !action, onClose);
 
@@ -121,6 +122,23 @@ export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClo
   const active = d ? !['cancelled', 'rejected', 'expired'].includes(d.status) : false;
   const canComplete = d ? d.status === 'confirmed' && !block && d.checkOut <= todayInIndia() : false;
   const canRecord = d ? !block && ['confirmed', 'completed', 'pending_payment', 'pending_verification'].includes(d.status) : false;
+  const canEmail = d ? !block && Boolean(d.guestEmail) && ['confirmed', 'completed', 'rejected'].includes(d.status) : false;
+
+  // Send (again) the guest's confirmation / "not accepted" email; shows what really happened.
+  const emailGuest = async () => {
+    setBusy(true);
+    setMail(null);
+    try {
+      const r = await call<{ to: string }>(`/bookings/${refId}/email-guest`, { method: 'POST', body: {} });
+      setMail({ tone: 'success', text: `Email sent to ${r.to}.` });
+      load();
+    } catch (e) {
+      setMail({ tone: 'danger', text: (e as Error).message });
+      load();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const refresh = async () => {
     setBusy(true);
@@ -191,6 +209,21 @@ export function BookingDrawer({ refId, onClose, onEdit }: { refId: string; onClo
                     <button className="btn btn-outline h-12 px-5 text-[16px]" onClick={() => setAction({ kind: 'record', balance: Math.max(0, d.totalPaise - d.amountPaidPaise) })}>
                       Record payment
                     </button>
+                  )}
+                </div>
+              )}
+
+              {canEmail && (
+                <div>
+                  <button className="btn btn-outline h-12 gap-2 px-5 text-[16px] disabled:opacity-60" disabled={busy} onClick={emailGuest}>
+                    <Mail size={17} aria-hidden="true" /> {d.status === 'rejected' ? 'Send “not accepted” email' : 'Send confirmation email'}
+                  </button>
+                  {mail && (
+                    <div className="mt-2">
+                      <Alert tone={mail.tone} role="status">
+                        {mail.text}
+                      </Alert>
+                    </div>
                   )}
                 </div>
               )}

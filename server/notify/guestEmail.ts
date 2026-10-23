@@ -1,6 +1,7 @@
 // Emails to the GUEST about an online booking: "confirmed" and "not accepted".
-// Sent through the owner's Google Apps Script ("guest_email" action), so they
-// come from the owner's Gmail and replies reach the owner. Only bookings with
+// Sent through EmailJS when it is set up (EMAILJS_*), otherwise through the
+// owner's Google Apps Script ("guest_email" action). Either way they come from
+// the owner's Gmail and replies reach the owner. Only bookings with
 // a guest email (online bookings) get one; enquiry guests are contacted on
 // WhatsApp. The audit log records whether each email really went out.
 
@@ -9,6 +10,7 @@ import { formatISODate } from '../../shared/validate.ts';
 import { amountPaid, getBookingById, type Ctx } from '../bookings.ts';
 import { getPropertySettings } from '../settings.ts';
 import { safeAudit } from './confirmation.ts';
+import { emailJsConfigured, sendViaEmailJs } from './emailjs.ts';
 import { sendGuestEmail, sheetsConfigured } from './sheets.ts';
 import { escapeHtml } from './telegram.ts';
 
@@ -57,20 +59,28 @@ ${rows.map(([k, v]) => `<tr><td style="border-bottom:1px solid #e2ddd7;color:#6e
   return { to: b.guest_email, subject, text, html };
 }
 
-/** Sends it (best effort). Records email.guest_<kind>_sent / _failed / _skipped in the audit log. */
-export async function notifyGuest(ctx: Ctx, bookingId: number, kind: GuestEmailKind): Promise<void> {
+export type GuestEmailResult = { status: 'sent'; to: string } | { status: 'failed'; error: string } | { status: 'skipped'; reason: string } | { status: 'no_email' };
+
+/** Sends it (best effort). Records email.guest_<kind>_sent / _failed / _skipped in the audit log and says which happened. */
+export async function notifyGuest(ctx: Ctx, bookingId: number, kind: GuestEmailKind): Promise<GuestEmailResult> {
   const email = await buildGuestEmail(ctx, bookingId, kind);
-  if (!email) return; // no guest email on this booking (owner-entered / enquiry)
-  if (!sheetsConfigured(ctx.config.notify)) {
-    await safeAudit(ctx, `email.guest_${kind}_skipped`, bookingId, { reason: 'Google Apps Script not configured' });
-    return;
+  if (!email) return { status: 'no_email' }; // no guest email on this booking (owner-entered / enquiry)
+  const viaEmailJs = emailJsConfigured(ctx.config.notify.emailjs);
+  if (!viaEmailJs && !sheetsConfigured(ctx.config.notify)) {
+    const reason = 'No email service set up (EmailJS or Google Apps Script)';
+    await safeAudit(ctx, `email.guest_${kind}_skipped`, bookingId, { reason });
+    return { status: 'skipped', reason };
   }
+  const via = viaEmailJs ? 'EmailJS' : 'Apps Script';
   try {
-    await sendGuestEmail(ctx.config.notify, email);
-    await safeAudit(ctx, `email.guest_${kind}_sent`, bookingId, { to: email.to });
+    if (viaEmailJs) await sendViaEmailJs(ctx.config.notify.emailjs, { ...email, replyTo: ctx.config.admin.emails[0] ?? '' });
+    else await sendGuestEmail(ctx.config.notify, email);
+    await safeAudit(ctx, `email.guest_${kind}_sent`, bookingId, { to: email.to, via });
+    return { status: 'sent', to: email.to };
   } catch (e) {
     const error = (e as Error).message;
     console.error(`[guest-email] ${kind} for booking ${bookingId} failed:`, error);
-    await safeAudit(ctx, `email.guest_${kind}_failed`, bookingId, { error });
+    await safeAudit(ctx, `email.guest_${kind}_failed`, bookingId, { error, via });
+    return { status: 'failed', error };
   }
 }
